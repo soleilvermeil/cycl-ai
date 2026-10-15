@@ -1,6 +1,14 @@
+mod api;
 mod detail;
-mod format;
+pub(crate) mod format;
+mod import;
+mod layout;
+mod planned;
+mod route;
+mod settings;
+mod stats;
 mod workout;
+mod workout_chart;
 
 use axum::extract::{Form, State};
 use axum::response::{Html, Redirect};
@@ -16,22 +24,52 @@ use std::sync::OnceLock;
 #[derive(Clone)]
 struct AppState {
     pool: SqlitePool,
-    config: crate::config::Config,
 }
 
-pub async fn serve(pool: SqlitePool, config: crate::config::Config) -> anyhow::Result<()> {
-    let state = AppState { pool, config };
+pub async fn serve(pool: SqlitePool) -> anyhow::Result<()> {
+    if let Ok(s) = crate::settings::fetch(&pool).await {
+        layout::set_theme(&s.theme_color, &s.theme_mode);
+    }
+    let state = AppState { pool };
     let app = Router::new()
         .route("/", get(dashboard))
         .route("/activity/{id}", get(detail::activity_detail))
         .route("/activity/{id}/context", post(detail::regenerate_bilan))
+        .route("/activity/{id}/report", post(detail::activity_report))
+        .route("/activity/{id}/description", post(detail::update_description))
         .route("/workouts", get(workout::list).post(workout::create))
         .route("/workouts/{id}", get(workout::edit_form).post(workout::update))
         .route("/workouts/{id}/delete", post(workout::delete))
-        .route("/config/ftp", post(update_ftp))
+        .route("/planned/new", get(planned::new_form))
+        .route("/planned", post(planned::create))
+        .route("/planned/{id}", get(planned::edit_form).post(planned::update))
+        .route("/planned/{id}/delete", post(planned::delete))
         .route("/digest", post(trigger_digest))
-        .route("/config/gym", post(update_gym_config))
+        .route("/digest/report", post(digest_report))
         .route("/sync", post(trigger_sync))
+        .route("/sync/full", post(trigger_full_sync))
+        .route("/sync/status", get(sync_status))
+        .route("/import", post(import::import_activity))
+        .route("/route", get(route::page).post(route::analyze))
+        .route("/stats", get(stats::page))
+        .route("/api/v1/profile", get(api::profile))
+        .route("/api/v1/load", get(api::load))
+        .route("/api/v1/summary", get(api::summary))
+        .route("/api/v1/activities", get(api::activities))
+        .route("/api/v1/activities/{id}", get(api::activity))
+        .route("/api/v1/activities/{id}/streams", get(api::activity_streams))
+        .route("/api/v1/workouts", get(api::workouts))
+        .route("/api/v1/planned", get(api::planned_list).post(api::planned_create))
+        .route("/api/v1/planned/{id}", axum::routing::delete(api::planned_delete))
+        .route("/settings", get(settings::page))
+        .route("/settings/keys", post(settings::update_keys))
+        .route("/settings/profile", post(settings::update_profile))
+        .route("/settings/prompts/bilan", post(settings::update_bilan_prompt))
+        .route("/settings/prompts/digest", post(settings::update_digest_prompt))
+        .route("/settings/athlete", post(settings::update_athlete_config))
+        .route("/settings/appearance", post(settings::update_appearance))
+        // Planned-route GPX and FIT/GPX activity uploads can exceed axum's 2 MB default.
+        .layer(axum::extract::DefaultBodyLimit::max(25 * 1024 * 1024))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
@@ -42,20 +80,14 @@ pub async fn serve(pool: SqlitePool, config: crate::config::Config) -> anyhow::R
 
 struct AthleteConfig {
     ftp_watts: i64,
-    hr_max: i64,
     hr_rest: i64,
-}
-
-struct LoadSummary {
-    tss_period: f64,
-    ctl: f64,
-    atl: f64,
-    tsb: f64,
-    zone_secs: [i64; 7],
+    hr_max: i64,
+    run_threshold_pace_s: i64,
 }
 
 struct ActivityRow {
     id: i64,
+    is_run: bool,
     started_at: String,
     distance_m: f64,
     duration_s: i64,
@@ -66,6 +98,17 @@ struct ActivityRow {
     route_svg: Option<String>,
 }
 
+impl AthleteConfig {
+    fn athlete(&self) -> crate::workout::Athlete {
+        crate::workout::Athlete {
+            ftp_watts: self.ftp_watts as f64,
+            hr_rest: self.hr_rest as f64,
+            hr_max: self.hr_max as f64,
+            run_threshold_pace_s: self.run_threshold_pace_s as f64,
+        }
+    }
+}
+
 struct DigestRow {
     date: String,
     free_text: Option<String>,
@@ -74,63 +117,27 @@ struct DigestRow {
 }
 
 async fn fetch_athlete_config(pool: &SqlitePool) -> anyhow::Result<AthleteConfig> {
-    let (ftp_watts, hr_max, hr_rest): (i64, i64, i64) =
-        sqlx::query_as("SELECT ftp_watts, hr_max, hr_rest FROM athlete_config WHERE id = 1")
+    let (ftp_watts, hr_rest, hr_max, run_threshold_pace_s): (i64, i64, i64, i64) =
+        sqlx::query_as("SELECT ftp_watts, hr_rest, hr_max, run_threshold_pace_s FROM athlete_config WHERE id = 1")
             .fetch_one(pool)
             .await?;
-    Ok(AthleteConfig {
-        ftp_watts,
-        hr_max,
-        hr_rest,
-    })
+    Ok(AthleteConfig { ftp_watts, hr_rest, hr_max, run_threshold_pace_s })
 }
 
-/// Window is 4 weeks, not 1 — a weekend-only rider can have zero activity
-/// on 5 of 7 days, so a 7-day window is too sparse to be a useful summary.
-const LOAD_WINDOW_DAYS: &str = "-27 days";
-
-async fn fetch_load_summary(pool: &SqlitePool) -> anyhow::Result<LoadSummary> {
-    let latest: Option<(f64, f64, f64)> =
-        sqlx::query_as("SELECT ctl, atl, tsb FROM daily_load ORDER BY date DESC LIMIT 1")
-            .fetch_optional(pool)
-            .await?;
-    let (ctl, atl, tsb) = latest.unwrap_or((0.0, 0.0, 0.0));
-
-    let (tss_period,): (f64,) = sqlx::query_as(&format!(
-        "SELECT COALESCE(SUM(tss), 0.0) FROM daily_load WHERE date >= date('now', '{LOAD_WINDOW_DAYS}')"
-    ))
-    .fetch_one(pool)
-    .await?;
-
-    let zones: (i64, i64, i64, i64, i64, i64, i64) = sqlx::query_as(&format!(
-        r#"
-        SELECT COALESCE(SUM(zone1_s),0), COALESCE(SUM(zone2_s),0), COALESCE(SUM(zone3_s),0),
-               COALESCE(SUM(zone4_s),0), COALESCE(SUM(zone5_s),0), COALESCE(SUM(zone6_s),0), COALESCE(SUM(zone7_s),0)
-        FROM activities WHERE date(started_at) >= date('now', '{LOAD_WINDOW_DAYS}')
-        "#
-    ))
-    .fetch_one(pool)
-    .await?;
-
-    Ok(LoadSummary {
-        tss_period,
-        ctl,
-        atl,
-        tsb,
-        zone_secs: [zones.0, zones.1, zones.2, zones.3, zones.4, zones.5, zones.6],
-    })
-}
-
+/// Reads each activity's route thumbnail from `activities.route_thumb_svg`
+/// (populated at sync/import time and by the boot backfill — see
+/// `sync::run` and `db::backfill_route_thumbnails`) instead of parsing the
+/// full GPS stream on every dashboard load. Deliberately doesn't join
+/// `activity_streams`, whose rows carry the full multi-hundred-KB streams.
 #[allow(clippy::type_complexity)]
 async fn fetch_recent_activities(pool: &SqlitePool) -> anyhow::Result<Vec<ActivityRow>> {
-    let rows: Vec<(i64, String, f64, i64, f64, Option<f64>, Option<f64>, Option<String>, Option<String>)> =
+    let rows: Vec<(i64, String, String, f64, i64, f64, Option<f64>, Option<f64>, Option<String>, Option<String>)> =
         sqlx::query_as(
             r#"
-        SELECT a.id, a.started_at, a.distance_m, a.duration_s, a.elevation_gain_m,
-               a.tss, a.intensity_factor, b.text, s.streams_json
+        SELECT a.id, a.sport_type, a.started_at, a.distance_m, a.duration_s, a.elevation_gain_m,
+               a.tss, a.intensity_factor, b.text, a.route_thumb_svg
         FROM activities a
         LEFT JOIN activity_bilans b ON b.activity_id = a.id
-        LEFT JOIN activity_streams s ON s.activity_id = a.id
         ORDER BY a.started_at DESC
         LIMIT 10
         "#,
@@ -141,13 +148,11 @@ async fn fetch_recent_activities(pool: &SqlitePool) -> anyhow::Result<Vec<Activi
     Ok(rows
         .into_iter()
         .map(
-            |(id, started_at, distance_m, duration_s, elevation_gain_m, tss, intensity_factor, bilan, streams_json)| {
-                let route_svg = streams_json
-                    .as_deref()
-                    .and_then(extract_latlng)
-                    .and_then(|pts| route_svg(&pts));
+            |(id, sport_type, started_at, distance_m, duration_s, elevation_gain_m, tss, intensity_factor, bilan, route_thumb_svg)| {
+                let route_svg = route_thumb_svg.filter(|s| !s.is_empty());
                 ActivityRow {
                     id,
+                    is_run: crate::metrics::is_run(&sport_type),
                     started_at,
                     distance_m,
                     duration_s,
@@ -162,85 +167,66 @@ async fn fetch_recent_activities(pool: &SqlitePool) -> anyhow::Result<Vec<Activi
         .collect())
 }
 
-fn extract_latlng(streams_json: &str) -> Option<Vec<[f64; 2]>> {
-    let parsed: serde_json::Value = serde_json::from_str(streams_json).ok()?;
-    parsed
-        .get("latlng")?
-        .get("data")?
-        .as_array()?
-        .iter()
-        .map(|pair| {
-            let arr = pair.as_array()?;
-            Some([arr.first()?.as_f64()?, arr.get(1)?.as_f64()?])
-        })
-        .collect()
-}
-
-const ROUTE_THUMB_W: f64 = 96.0;
-const ROUTE_THUMB_H: f64 = 64.0;
-
-/// Renders the GPS track as a small inline SVG polyline — a route-shape
-/// thumbnail (like Strava's own small previews), not a real map: no tile
-/// server dependency, works fully offline behind the VPN.
-fn route_svg(latlng: &[[f64; 2]]) -> Option<String> {
-    if latlng.len() < 2 {
-        return None;
-    }
-    let lat_min = latlng.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min);
-    let lat_max = latlng.iter().map(|p| p[0]).fold(f64::NEG_INFINITY, f64::max);
-    let lng_min = latlng.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
-    let lng_max = latlng.iter().map(|p| p[1]).fold(f64::NEG_INFINITY, f64::max);
-
-    // Longitude degrees compress towards the poles; correct so the shape
-    // isn't stretched east-west.
-    let lat_mid = (lat_min + lat_max) / 2.0;
-    let lng_correction = lat_mid.to_radians().cos().max(0.1);
-
-    let lat_range = (lat_max - lat_min).max(1e-9);
-    let lng_range = ((lng_max - lng_min) * lng_correction).max(1e-9);
-
-    const PAD: f64 = 4.0;
-    let usable_w = ROUTE_THUMB_W - 2.0 * PAD;
-    let usable_h = ROUTE_THUMB_H - 2.0 * PAD;
-    let scale = (usable_w / lng_range).min(usable_h / lat_range);
-
-    let offset_x = PAD + (usable_w - lng_range * scale) / 2.0;
-    let offset_y = PAD + (usable_h - lat_range * scale) / 2.0;
-
-    // Downsample dense streams (a 2h ride at 1Hz is ~7000 points) — a route
-    // shape doesn't need per-second resolution to look right.
-    let stride = (latlng.len() / 150).max(1);
-    let points: String = latlng
-        .iter()
-        .step_by(stride)
-        .map(|p| {
-            let x = offset_x + (p[1] - lng_min) * lng_correction * scale;
-            let y = offset_y + (lat_max - p[0]) * scale;
-            format!("{x:.1},{y:.1}")
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    Some(format!(
-        r##"<svg viewBox="0 0 {ROUTE_THUMB_W} {ROUTE_THUMB_H}" width="{ROUTE_THUMB_W}" height="{ROUTE_THUMB_H}" class="route-thumb" aria-hidden="true"><polyline points="{points}" fill="none" stroke="#2563eb" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>"##
-    ))
-}
-
 struct CalendarActivity {
     id: i64,
+    is_run: bool,
     date: String,
     distance_km: f64,
     tss: Option<f64>,
     intensity_factor: Option<f64>,
 }
 
-/// "mois transitif": roughly the last 3 weeks plus the next 2 (~5 weeks).
-/// The grid is week-aligned (Monday-start) rather than a strict -21/+14 day
-/// cut, so FullCalendar's stock dayGrid can wrap rows at 7 columns like it
-/// would for a real month — a partial-week cut would need a hand-rolled
-/// grid, which is exactly what we're avoiding here.
-const CALENDAR_WEEKS_BACK: i64 = 3;
-const CALENDAR_WEEKS_SPAN: i64 = 5;
+/// "mois transitif": the last 2 weeks plus the next 4 (6 weeks) — enough
+/// look-ahead to plan sessions. The grid is week-aligned (Monday-start)
+/// rather than a strict day cut, so FullCalendar's stock dayGrid can wrap
+/// rows at 7 columns like it would for a real month — a partial-week cut
+/// would need a hand-rolled grid, which is exactly what we're avoiding here.
+const CALENDAR_WEEKS_BACK: i64 = 2;
+const CALENDAR_WEEKS_SPAN: i64 = 6;
+
+/// A planned session as a calendar event (see `crate::planned`).
+struct CalendarPlanned {
+    id: i64,
+    date: String,
+    name: String,
+    sport: crate::planned::Sport,
+    minutes: f64,
+    /// Estimated IF (from the steps' average targets) — only used to pick the
+    /// zone color, like completed rides.
+    intensity: f64,
+    /// An activity already exists on that day.
+    done: bool,
+}
+
+async fn fetch_calendar_planned(pool: &SqlitePool, ath: &crate::workout::Athlete) -> anyhow::Result<Vec<CalendarPlanned>> {
+    let start = calendar_window_start(chrono::Utc::now().date_naive());
+    let end = start + chrono::Duration::weeks(CALENDAR_WEEKS_SPAN);
+    let planned = crate::planned::list_between(pool, start, end).await?;
+
+    let mut out = Vec::with_capacity(planned.len());
+    for p in planned {
+        let (minutes, tss) = serde_json::from_str::<crate::workout::Workout>(&p.steps_json)
+            .map(|w| w.load_estimate(ath))
+            .unwrap_or((0.0, 0.0));
+        let intensity = if minutes > 0.0 { (tss / (minutes / 60.0) / 100.0).sqrt() } else { 0.0 };
+        let (done,): (bool,) = sqlx::query_as(
+            "SELECT EXISTS(SELECT 1 FROM activities WHERE started_at >= ?1 AND started_at < date(?1, '+1 day'))",
+        )
+        .bind(&p.planned_date)
+        .fetch_one(pool)
+        .await?;
+        out.push(CalendarPlanned {
+            id: p.id,
+            date: p.planned_date,
+            name: p.name,
+            sport: crate::planned::Sport::from_db(&p.sport),
+            minutes,
+            intensity,
+            done,
+        });
+    }
+    Ok(out)
+}
 
 /// Monday on/before `today - weeks_back` weeks — the first visible cell.
 fn calendar_window_start(today: NaiveDate) -> NaiveDate {
@@ -252,11 +238,11 @@ async fn fetch_calendar_activities(pool: &SqlitePool) -> anyhow::Result<Vec<Cale
     let start = calendar_window_start(chrono::Utc::now().date_naive());
     let end = start + chrono::Duration::weeks(CALENDAR_WEEKS_SPAN);
 
-    let rows: Vec<(i64, String, f64, Option<f64>, Option<f64>)> = sqlx::query_as(
+    let rows: Vec<(i64, String, String, f64, Option<f64>, Option<f64>)> = sqlx::query_as(
         r#"
-        SELECT id, date(started_at) as day, distance_m, tss, intensity_factor
+        SELECT id, sport_type, date(started_at) as day, distance_m, tss, intensity_factor
         FROM activities
-        WHERE date(started_at) >= ?1 AND date(started_at) < ?2
+        WHERE started_at >= ?1 AND started_at < ?2
         ORDER BY started_at
         "#,
     )
@@ -267,8 +253,9 @@ async fn fetch_calendar_activities(pool: &SqlitePool) -> anyhow::Result<Vec<Cale
 
     Ok(rows
         .into_iter()
-        .map(|(id, date, distance_m, tss, intensity_factor)| CalendarActivity {
+        .map(|(id, sport_type, date, distance_m, tss, intensity_factor)| CalendarActivity {
             id,
+            is_run: crate::metrics::is_run(&sport_type),
             date,
             distance_km: distance_m / 1000.0,
             tss,
@@ -280,17 +267,42 @@ async fn fetch_calendar_activities(pool: &SqlitePool) -> anyhow::Result<Vec<Cale
 /// FullCalendar (CDN, single bundled script — same pattern as Chart.js/
 /// Leaflet elsewhere in this app) rather than a hand-rolled month grid.
 /// Shows completed rides now; structured/planned workouts are a follow-up.
-fn render_calendar_html(activities: &[CalendarActivity]) -> String {
+fn render_calendar_html(activities: &[CalendarActivity], planned: &[CalendarPlanned]) -> String {
     let start = calendar_window_start(chrono::Utc::now().date_naive());
+
+    let planned_events = planned.iter().map(|p| {
+        // Runs get the same teal as completed runs; everything else is colored
+        // by its estimated intensity zone.
+        let color = if p.sport == crate::planned::Sport::Running { RUN_COLOR } else { zone_color_for_intensity(p.intensity) };
+        // Outlined + tinted rather than solid, so a plan reads as "not done
+        // yet" next to the solid completed rides.
+        serde_json::json!({
+            "title": format!("{}{} {} · {}", if p.done { "✓ " } else { "" }, p.sport.icon(), p.name, format_duration_hms((p.minutes * 60.0).round() as i64)),
+            "start": p.date,
+            "allDay": true,
+            "url": format!("/planned/{}", p.id),
+            "backgroundColor": format!("{color}22"),
+            "borderColor": color,
+            "textColor": "var(--text)",
+            "classNames": ["planned-event"],
+        })
+    });
 
     let events: Vec<serde_json::Value> = activities
         .iter()
         .map(|a| {
+            let prefix = if a.is_run { "🏃 " } else { "" };
             let title = match a.tss {
-                Some(tss) => format!("{:.0} km · TSS {:.0}", a.distance_km, tss),
-                None => format!("{:.0} km", a.distance_km),
+                Some(tss) => format!("{prefix}{:.0} km · {} {:.0}", a.distance_km, if a.is_run { "hrTSS" } else { "TSS" }, tss),
+                None => format!("{prefix}{:.0} km", a.distance_km),
             };
-            let color = a.intensity_factor.map(zone_color_for_intensity).unwrap_or("#9ca3af");
+            // Runs have no intensity factor (no power), so they get their own
+            // teal instead of the "unknown" grey rides fall back to.
+            let color = if a.is_run {
+                RUN_COLOR
+            } else {
+                a.intensity_factor.map(zone_color_for_intensity).unwrap_or("#9ca3af")
+            };
             // Z4/Seuil (yellow) is too light for white text to stay readable.
             let text_color = if color == ZONE_COLORS[3] { "#1f2430" } else { "#fff" };
             serde_json::json!({
@@ -303,15 +315,19 @@ fn render_calendar_html(activities: &[CalendarActivity]) -> String {
                 "textColor": text_color,
             })
         })
+        .chain(planned_events)
         .collect();
 
     format!(
         r#"<script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@fullcalendar/core@6.1.15/locales/fr.global.min.js"></script>
+<p class="hint calendar-hint">Clique sur un jour pour y planifier une séance.</p>
 <div id="calendar"></div>
 <script>
 document.addEventListener('DOMContentLoaded', function() {{
   var calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {{
     headerToolbar: false,
+    locale: 'fr',
     firstDay: 1,
     height: 'auto',
     initialDate: '{start}',
@@ -323,6 +339,7 @@ document.addEventListener('DOMContentLoaded', function() {{
       }},
     }},
     events: {events_json},
+    dateClick: function(info) {{ window.location.href = '/planned/new?date=' + info.dateStr; }},
   }});
   calendar.render();
 }});
@@ -347,152 +364,6 @@ async fn fetch_latest_digest(pool: &SqlitePool) -> anyhow::Result<Option<DigestR
     }))
 }
 
-async fn fetch_gym_equipment(pool: &SqlitePool) -> anyhow::Result<Vec<String>> {
-    let (equipment_json,): (String,) =
-        sqlx::query_as("SELECT equipment_json FROM gym_config WHERE id = 1")
-            .fetch_one(pool)
-            .await?;
-    Ok(serde_json::from_str(&equipment_json).unwrap_or_default())
-}
-
-pub(super) const BASE_CSS: &str = r#"
-:root {
-  --bg: #f5f6f8;
-  --card-bg: #ffffff;
-  --text: #1f2430;
-  --text-muted: #6b7280;
-  --border: #e5e7eb;
-  --accent: #2563eb;
-  --accent-soft: #eff6ff;
-  --radius: 10px;
-}
-* { box-sizing: border-box; }
-body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-  background: var(--bg);
-  color: var(--text);
-  max-width: 760px;
-  margin: 0 auto;
-  padding: 2.5rem 1.25rem 4rem;
-  line-height: 1.5;
-}
-h1 { font-size: 1.6rem; margin: 0 0 1.75rem; }
-h2 { font-size: 1.05rem; margin: 0 0 1rem; }
-h3 { font-size: 1rem; margin: 0.6rem 0; }
-section {
-  background: var(--card-bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 1.25rem 1.4rem;
-  margin-bottom: 1.5rem;
-  box-shadow: 0 1px 2px rgba(16,24,40,0.04);
-}
-label { font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 0.4rem; }
-input[type=number], input[type=text], textarea {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0.45rem 0.6rem;
-  font-size: 0.9rem;
-  font-family: inherit;
-  width: 100%;
-  max-width: 260px;
-}
-textarea { max-width: 100%; }
-button {
-  background: var(--accent);
-  color: white;
-  border: none;
-  border-radius: 6px;
-  padding: 0.5rem 1.1rem;
-  font-size: 0.85rem;
-  cursor: pointer;
-  margin-top: 0.65rem;
-}
-button:hover { opacity: 0.9; }
-.hint { color: var(--text-muted); font-size: 0.85rem; margin: 0.4rem 0 0; }
-.zone-rows { display: grid; grid-template-columns: minmax(120px, auto) 1fr auto; row-gap: 0.35rem; column-gap: 0.6rem; align-items: center; font-size: 0.8rem; }
-.zone-row { display: contents; }
-.zone-row-label { color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.zone-row-bar-wrap { background: var(--bg); border-radius: 4px; height: 10px; overflow: hidden; }
-.zone-row-bar { height: 100%; border-radius: 4px; min-width: 2px; position: relative; }
-.zone-row-bar-dim { position: absolute; top: 0; right: 0; bottom: 0; width: 0; background: var(--card-bg); opacity: 0.6; transition: width 0.2s; }
-.zone-row-stats { color: var(--text-muted); white-space: nowrap; text-align: right; min-width: 84px; }
-.stats { display: flex; flex-wrap: wrap; gap: 1.5rem; margin-bottom: 1rem; }
-.stats .stat .value { font-size: 1.3rem; font-weight: 600; }
-.stats .stat .label { font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.03em; }
-.activity-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.75rem; }
-.activity-card { display: flex; gap: 1rem; padding: 0.7rem; border: 1px solid var(--border); border-radius: 8px; align-items: flex-start; }
-.route-thumb { flex-shrink: 0; background: var(--accent-soft); border-radius: 6px; }
-.route-thumb-empty { opacity: 0.5; }
-.activity-body { flex: 1; min-width: 0; }
-.activity-meta { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.3rem; }
-.activity-meta a { color: var(--accent); text-decoration: none; }
-.activity-meta a:hover { text-decoration: underline; }
-.activity-stats { flex-shrink: 0; display: flex; flex-direction: column; gap: 0.15rem; font-size: 0.8rem; color: var(--text-muted); text-align: right; min-width: 84px; }
-.bilan { font-style: italic; color: #444; font-size: 0.88rem; margin: 0; }
-.bilan.pending { color: #999; font-style: normal; }
-.digest-date { font-size: 0.8rem; color: var(--text-muted); margin: 0.5rem 0 0.75rem; }
-.workout-steps ul { list-style: none; padding-left: 1rem; margin: 0.3rem 0; border-left: 2px solid var(--border); }
-.workout-steps li { padding: 0.15rem 0 0.15rem 0.6rem; font-size: 0.88rem; }
-abbr[data-tip] {
-  text-decoration: underline dotted; text-decoration-color: var(--text-muted);
-  cursor: help; position: relative;
-}
-abbr[data-tip]:hover::after {
-  content: attr(data-tip);
-  position: absolute;
-  left: 50%;
-  bottom: calc(100% + 6px);
-  transform: translateX(-50%);
-  width: max-content;
-  max-width: 260px;
-  background: rgba(17, 24, 39, 0.92);
-  color: #fff;
-  font-weight: 400;
-  font-style: normal;
-  font-size: 0.78rem;
-  line-height: 1.35;
-  letter-spacing: normal;
-  text-align: left;
-  text-transform: none;
-  padding: 0.4rem 0.6rem;
-  border-radius: 6px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
-  z-index: 30;
-  pointer-events: none;
-  white-space: normal;
-}
-#calendar {
-  --fc-border-color: var(--border);
-  --fc-page-bg-color: var(--card-bg);
-  --fc-neutral-bg-color: var(--bg);
-  --fc-today-bg-color: var(--accent-soft);
-  --fc-event-text-color: #fff;
-  --fc-small-font-size: 0.75rem;
-  font-family: inherit;
-}
-#calendar .fc-daygrid-day-number { color: var(--text); font-size: 0.8rem; }
-#calendar .fc-col-header-cell-cushion { color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; }
-#calendar .fc-event { border-radius: 4px; padding: 0 2px; cursor: pointer; }
-.tsb-gauge-wrap { margin: 0.9rem 0 1.2rem; }
-.tsb-gauge { position: relative; display: flex; height: 12px; border-radius: 6px; overflow: hidden; }
-.tsb-gauge-seg:first-child { border-top-left-radius: 6px; border-bottom-left-radius: 6px; }
-.tsb-gauge-seg:last-child { border-top-right-radius: 6px; border-bottom-right-radius: 6px; }
-.tsb-gauge-cursor {
-  position: absolute;
-  top: -4px;
-  width: 12px;
-  height: 20px;
-  margin-left: -6px;
-  background: var(--text);
-  border: 2px solid var(--card-bg);
-  border-radius: 3px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
-}
-.tsb-status { font-weight: 600; font-size: 0.95rem; margin: 0.6rem 0 0; }
-.tsb-estimate.hint { margin-top: 0.15rem; }
-"#;
-
 fn escape_html(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -507,6 +378,7 @@ struct GlossaryTerm {
 
 const GLOSSARY: &[GlossaryTerm] = &[
     GlossaryTerm { acronym: "TSS", full_name: "Training Stress Score", definition: "Charge d'une séance, combine intensité et durée." },
+    GlossaryTerm { acronym: "hrTSS", full_name: "Heart-rate TSS", definition: "TSS estimé à partir de la fréquence cardiaque (charge TRIMP rapportée à une heure à la FC seuil = 100). Utilisé pour la course à pied, qui s'additionne au TSS puissance du vélo dans CTL/ATL/TSB." },
     GlossaryTerm { acronym: "IF", full_name: "Intensity Factor", definition: "Intensité relative de la séance (NP ÷ FTP)." },
     GlossaryTerm { acronym: "NP", full_name: "Normalized Power", definition: "Puissance normalisée, pondère les pics d'effort plus que la moyenne brute." },
     GlossaryTerm { acronym: "VI", full_name: "Variability Index", definition: "Régularité de l'effort (NP ÷ puissance moyenne) ; proche de 1 = effort stable." },
@@ -539,54 +411,96 @@ fn annotate_acronyms(escaped_text: &str) -> String {
     .into_owned()
 }
 
+/// "1 h 30", "45 min", "2 min 30", "40 s" — compact duration for step chips.
+fn format_step_duration(minutes: f64) -> String {
+    let total_s = (minutes * 60.0).round() as i64;
+    if total_s <= 0 {
+        return "?".to_string();
+    }
+    let (h, m, sec) = (total_s / 3600, (total_s % 3600) / 60, total_s % 60);
+    match (h, m, sec) {
+        (0, 0, s) => format!("{s} s"),
+        (0, m, 0) => format!("{m} min"),
+        (0, m, s) => format!("{m} min {s:02}"),
+        (h, 0, 0) => format!("{h} h"),
+        (h, m, _) => format!("{h} h {m:02}"),
+    }
+}
+
+/// Target as short text ("195–215 W", "Z3 puissance", "4:30–5:00 /km").
+fn format_step_target(t: &serde_json::Value) -> String {
+    let kind = t.get("type").and_then(|k| k.as_str());
+    if kind == Some("hr_zone") || kind == Some("power_zone") {
+        let zone = t.get("zone").and_then(|z| z.as_u64()).unwrap_or(0);
+        return format!("Z{zone} {}", if kind == Some("hr_zone") { "FC" } else { "puissance" });
+    }
+    if kind == Some("pace_range") {
+        let pace = |k: &str| t.get(k).and_then(|v| v.as_f64()).map(format::format_pace_secs).unwrap_or_default();
+        let (fast, slow) = (pace("low"), pace("high"));
+        return if fast == slow { format!("{fast} /km") } else { format!("{fast}–{slow} /km") };
+    }
+    let unit = if kind == Some("hr_range") { "bpm" } else { "W" };
+    let low = t.get("low").and_then(|l| l.as_f64()).unwrap_or(0.0);
+    let high = t.get("high").and_then(|h| h.as_f64()).unwrap_or(low);
+    if (low - high).abs() < 0.01 {
+        format!("{low:.0} {unit}")
+    } else {
+        format!("{low:.0}–{high:.0} {unit}")
+    }
+}
+
+/// Compact, symbol-based step list: one row per step (kind, ⏱ duration,
+/// 🎯 target, terrain, 📝 note) and 🔁 blocks for repeats.
 fn render_workout_steps(steps: &[serde_json::Value]) -> String {
-    let mut out = String::from("<ul>");
+    let mut out = String::from("<ul class=\"steps\">");
     for step in steps {
         let step_type = step.get("type").and_then(|t| t.as_str()).unwrap_or("?");
         if step_type == "repeat" {
             let count = step.get("count").and_then(|c| c.as_u64()).unwrap_or(1);
-            let inner: Vec<serde_json::Value> = step
-                .get("steps")
-                .and_then(|s| s.as_array())
-                .cloned()
-                .unwrap_or_default();
-            out += &format!("<li>Répéter x{count}{}</li>", render_workout_steps(&inner));
-        } else {
-            let duration = step
-                .get("duration")
-                .and_then(|d| d.get("value"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            let target = step.get("target").map(|t| {
-                let low = t.get("low").and_then(|l| l.as_f64()).unwrap_or(0.0);
-                let high = t.get("high").and_then(|h| h.as_f64()).unwrap_or(low);
-                if (low - high).abs() < 0.01 {
-                    format!("{low:.0}W")
-                } else {
-                    format!("{low:.0}-{high:.0}W")
-                }
-            });
-            let terrain = step.get("terrain").and_then(|t| t.as_str()).unwrap_or("plat");
-            let note = step
-                .get("note")
-                .and_then(|n| n.as_str())
-                .map(|n| format!(" — {}", escape_html(n)))
-                .unwrap_or_default();
+            let inner: Vec<serde_json::Value> =
+                step.get("steps").and_then(|s| s.as_array()).cloned().unwrap_or_default();
             out += &format!(
-                "<li>{}: {}{} ({}){}</li>",
-                escape_html(step_type),
-                escape_html(duration),
-                target.map(|t| format!(" @ {t}")).unwrap_or_default(),
-                escape_html(terrain),
-                note
+                "<li class=\"step step-repeat\"><span class=\"step-kind\">🔁 ×{count}</span>{}</li>",
+                render_workout_steps(&inner)
             );
+            continue;
         }
+        let (icon, label) = match step_type {
+            "warmup" => ("🔥", "Échauffement"),
+            "interval" => ("⚡", "Effort"),
+            "recovery" => ("💤", "Récup."),
+            "cooldown" => ("🧊", "Retour au calme"),
+            _ => ("▫️", step_type),
+        };
+        let minutes = step
+            .get("duration")
+            .and_then(|d| d.get("value"))
+            .and_then(|v| v.as_str())
+            .map(crate::workout::parse_minutes)
+            .unwrap_or(0.0);
+        let mut chips = format!("<span class=\"chip\" title=\"Durée\">⏱ {}</span>", format_step_duration(minutes));
+        if let Some(t) = step.get("target") {
+            chips += &format!("<span class=\"chip chip-target\" title=\"Cible\">🎯 {}</span>", escape_html(&format_step_target(t)));
+        }
+        match step.get("terrain").and_then(|t| t.as_str()) {
+            Some("montée") => chips += "<span class=\"chip\" title=\"Terrain\">⛰ montée</span>",
+            Some("vallonné") => chips += "<span class=\"chip\" title=\"Terrain\">〰 vallonné</span>",
+            _ => {}
+        }
+        if let Some(note) = step.get("note").and_then(|n| n.as_str()).filter(|n| !n.trim().is_empty()) {
+            chips += &format!("<span class=\"step-note\">📝 {}</span>", escape_html(note));
+        }
+        out += &format!(
+            "<li class=\"step step-{}\"><span class=\"step-kind\">{icon} {}</span>{chips}</li>",
+            escape_html(step_type),
+            escape_html(label)
+        );
     }
     out += "</ul>";
     out
 }
 
-fn render_digest_section(digest: Option<&DigestRow>) -> String {
+fn render_digest_section(digest: Option<&DigestRow>, ath: &crate::workout::Athlete) -> String {
     let latest = match digest {
         Some(d) => d,
         None => return "<p>Aucun digest généré pour l'instant.</p>".to_string(),
@@ -609,24 +523,18 @@ fn render_digest_section(digest: Option<&DigestRow>) -> String {
                 .cloned()
                 .unwrap_or_default();
             format!(
-                "<h3>{}{}</h3>{}",
+                "<h3>{}{}</h3>{}{}",
                 escape_html(name),
                 distance,
+                workout_chart::chart_div(&w.to_string(), ath),
                 render_workout_steps(&steps)
             )
         }
         None => format!("<pre>{}</pre>", escape_html(&latest.llm_response_text)),
     };
 
-    let gym = parsed
-        .get("gym_suggestion")
-        .and_then(|g| g.as_str())
-        .filter(|g| !g.is_empty())
-        .map(|g| format!("<p><strong>Renfort salle:</strong> {}</p>", escape_html(g)))
-        .unwrap_or_default();
-
     format!(
-        "<p class=\"digest-date\">{}{}</p>{}<p class=\"bilan\">{}</p>{}",
+        "<p class=\"digest-date\">{}{}</p>{}<p class=\"bilan clamp-3\">{}</p>",
         escape_html(&latest.date),
         latest
             .free_text
@@ -636,9 +544,10 @@ fn render_digest_section(digest: Option<&DigestRow>) -> String {
             .unwrap_or_default(),
         workout_html,
         annotate_acronyms(&escape_html(&latest.llm_response_text)),
-        gym
     )
 }
+
+const RUN_COLOR: &str = "#0d9488";
 
 // Matches the user's other training tools: gris/bleu/vert/jaune/orange/rouge/mauve.
 const ZONE_COLORS: [&str; 7] = [
@@ -685,9 +594,8 @@ fn render_zone_bar(zone_secs: &[i64; 7], ftp: f64) -> String {
     render_zone_rows(&rows)
 }
 
-/// Horizontal bar-per-zone chart: each row shows the zone's own bar (0-100%
-/// of that zone's own share of total time — not relative to the biggest
-/// zone) plus the share as a percentage and a duration. The value range
+/// Horizontal bar-per-zone chart: each row shows the zone's own bar (its share
+/// of total time, on a scale whose maximum is max(biggest zone, 60 %)) plus the share as a percentage and a duration. The value range
 /// (e.g. "114-155W") is a hover tooltip, not inline text — the visible
 /// label is just the zone name. `.zone-rows` (not each `.zone-row`) is the
 /// grid container so every row shares the same column widths and the bars
@@ -697,13 +605,22 @@ fn render_zone_bar(zone_secs: &[i64; 7], ftp: f64) -> String {
 /// unused on the dashboard's aggregate view, harmless there.
 pub(super) fn render_zone_rows(rows: &[(String, String, &str, i64, String)]) -> String {
     let total: i64 = rows.iter().map(|(_, _, _, s, _)| *s).sum();
+    // A full bar stands for max(biggest zone share, 60 %): with a spread-out
+    // distribution (biggest zone ~20 %) bars stay readable instead of
+    // squashed, while a dominant zone still fills the bar.
+    let max_pct = rows
+        .iter()
+        .map(|(_, _, _, s, _)| if total > 0 { *s as f64 / total as f64 * 100.0 } else { 0.0 })
+        .fold(0.0, f64::max);
+    let scale = max_pct.max(60.0);
     let items: String = rows
         .iter()
         .map(|(name, range, color, secs, zone_id)| {
             let pct = if total > 0 { *secs as f64 / total as f64 * 100.0 } else { 0.0 };
+            let bar_pct = pct / scale * 100.0;
             format!(
                 "<div class=\"zone-row\" title=\"{}\" data-zone-id=\"{zone_id}\"><div class=\"zone-row-label\">{}</div>\
-                 <div class=\"zone-row-bar-wrap\"><div class=\"zone-row-bar\" style=\"width:{pct:.1}%;background:{color}\">\
+                 <div class=\"zone-row-bar-wrap\"><div class=\"zone-row-bar\" style=\"width:{bar_pct:.1}%;background:{color}\">\
                  <div class=\"zone-row-bar-dim\"></div></div></div><div class=\"zone-row-stats\">{pct:.0}% · {}</div></div>",
                 escape_html(range),
                 escape_html(name),
@@ -744,27 +661,7 @@ fn tsb_zone_index(tsb: f64) -> usize {
     TSB_ZONES.iter().position(|(upper, _, _)| tsb < *upper).unwrap_or(5)
 }
 
-/// Simulates forward day-by-day rest (TSS=0) using the same Banister EWMA
-/// as `metrics::recompute_daily_load`, and returns the number of days until
-/// CTL-ATL reaches `target`. Rest doesn't push TSB up forever — ATL decays
-/// faster than CTL at first (raising TSB) but both eventually fade toward 0,
-/// so a high target may never be reached; capped at 180 days, returning
-/// `None` rather than a misleading huge number in that case.
-fn days_of_rest_to_reach(mut ctl: f64, mut atl: f64, target: f64) -> Option<i64> {
-    if ctl - atl >= target {
-        return Some(0);
-    }
-    for day in 1..=180 {
-        ctl += -ctl / 42.0;
-        atl += -atl / 7.0;
-        if ctl - atl >= target {
-            return Some(day);
-        }
-    }
-    None
-}
-
-fn render_tsb_gauge(ctl: f64, atl: f64, tsb: f64) -> String {
+fn render_tsb_gauge(tsb: f64, rest_days_to_next_band: Option<i64>) -> String {
     let span = TSB_DISPLAY_BOUNDS[6] - TSB_DISPLAY_BOUNDS[0];
     let segments: String = (0..6)
         .map(|i| {
@@ -779,21 +676,18 @@ fn render_tsb_gauge(ctl: f64, atl: f64, tsb: f64) -> String {
     let (next_upper, _, current_color) = TSB_ZONES[zone_i];
     let status_label = TSB_ZONES[zone_i].1;
 
-    let estimate_html = if next_upper.is_finite() {
-        match days_of_rest_to_reach(ctl, atl, next_upper) {
-            Some(0) => String::new(),
-            Some(days) => {
-                let next_label = TSB_ZONES[zone_i + 1].1;
-                let day_word = if days == 1 { "jour" } else { "jours" };
-                format!(
-                    r#"<p class="hint tsb-estimate">≈ {days} {day_word} de repos pour atteindre « {} »</p>"#,
-                    escape_html(next_label)
-                )
-            }
-            None => String::new(),
+    // The estimate itself is precomputed with the rest of the dashboard
+    // summary (metrics::refresh_dashboard_summary); only the wording is here.
+    let estimate_html = match rest_days_to_next_band {
+        Some(days) if days > 0 && next_upper.is_finite() => {
+            let next_label = TSB_ZONES[zone_i + 1].1;
+            let day_word = if days == 1 { "jour" } else { "jours" };
+            format!(
+                r#"<p class="hint tsb-estimate">≈ {days} {day_word} de repos pour atteindre « {} »</p>"#,
+                escape_html(next_label)
+            )
         }
-    } else {
-        String::new()
+        _ => String::new(),
     };
 
     format!(
@@ -806,6 +700,129 @@ fn render_tsb_gauge(ctl: f64, atl: f64, tsb: f64) -> String {
     )
 }
 
+/// Days of history sent to the load chart (the select narrows it client-side)
+/// and days of rest projected forward.
+const LOAD_CHART_HISTORY_DAYS: i64 = 180;
+const LOAD_CHART_PROJECTION_DAYS: i64 = 7;
+
+/// JSON for the "Évolution" chart: `daily_load` rows up to today, then the
+/// same Banister recursion (`recompute_daily_load`) continued with TSS = 0 —
+/// what CTL/ATL/TSB do if no activity is recorded in the coming days.
+async fn load_chart_json(pool: &SqlitePool) -> String {
+    let since = (chrono::Utc::now().date_naive() - chrono::Duration::days(LOAD_CHART_HISTORY_DAYS)).to_string();
+    let rows: Vec<(String, f64, f64, f64, f64)> =
+        sqlx::query_as("SELECT date, tss, ctl, atl, tsb FROM daily_load WHERE date >= ? ORDER BY date")
+            .bind(since)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
+    let r1 = |v: f64| (v * 10.0).round() / 10.0;
+    let mut points: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|(d, tss, ctl, atl, tsb)| serde_json::json!({"d": d, "tss": r1(*tss), "ctl": r1(*ctl), "atl": r1(*atl), "tsb": r1(*tsb)}))
+        .collect();
+    let today_idx = points.len().saturating_sub(1);
+    if let Some((last_date, _, mut ctl, mut atl, _)) = rows.last().cloned() {
+        if let Ok(mut day) = NaiveDate::parse_from_str(&last_date, "%Y-%m-%d") {
+            for _ in 0..LOAD_CHART_PROJECTION_DAYS {
+                day += chrono::Duration::days(1);
+                ctl += -ctl / 42.0;
+                atl += -atl / 7.0;
+                points.push(serde_json::json!({"d": day.to_string(), "tss": 0, "ctl": r1(ctl), "atl": r1(atl), "tsb": r1(ctl - atl)}));
+            }
+        }
+    }
+    serde_json::json!({
+        "points": points,
+        "todayIdx": today_idx,
+        "bands": TSB_ZONES.iter().take(5).map(|z| z.0).collect::<Vec<_>>(),
+        "colors": TSB_ZONES.iter().map(|z| z.2).collect::<Vec<_>>(),
+    })
+    .to_string()
+    .replace("</", "<\\/")
+}
+
+/// Collapsible CTL / ATL / TSB chart with a rest projection (dashed).
+fn render_load_chart(json: &str) -> String {
+    format!(
+        r#"<details class="load-chart"><summary title="Évolution et prévision" aria-label="Afficher l'évolution et la prévision"></summary>
+<div class="load-chart-controls">
+  <label>Historique <select id="lc-range"><option value="14">14 jours</option><option value="21" selected>21 jours</option><option value="30">30 jours</option><option value="60">60 jours</option><option value="90">90 jours</option><option value="180">180 jours</option></select></label>
+  <label class="inline-check"><input type="checkbox" id="lc-ctl" checked> <span style="color:#3b82f6">● CTL</span></label>
+  <label class="inline-check"><input type="checkbox" id="lc-atl" checked> <span style="color:#f97316">● ATL</span></label>
+  <label class="inline-check"><input type="checkbox" id="lc-tsb" checked> <span style="color:#16a34a">● TSB</span></label>
+  <label class="inline-check"><input type="checkbox" id="lc-tss"> <span style="color:var(--text-muted)">▮ TSS</span></label>
+</div>
+<div class="load-chart-wrap"><canvas id="lc-canvas"></canvas></div>
+</details>
+<script>{script}</script>"#,
+        script = LOAD_CHART_JS.replace("__DATA__", json),
+    )
+}
+
+const LOAD_CHART_JS: &str = r##"
+(function() {
+  var D = __DATA__;
+  var details = document.querySelector('.load-chart');
+  var chart = null;
+  var COLORS = { ctl: '#3b82f6', atl: '#f97316', tsb: '#16a34a' };
+  function fmt(d) { var p = d.split('-'); return p[2] + '/' + p[1]; }
+  function build() {
+    var range = parseInt(document.getElementById('lc-range').value, 10);
+    var start = Math.max(0, D.todayIdx - range + 1);
+    var pts = D.points.slice(start);
+    var today = D.todayIdx - start;
+    var labels = pts.map(function(p) { return fmt(p.d); });
+    var proj = function(ctx) { return ctx.p0DataIndex >= today ? [6, 4] : undefined; };
+    function line(key, label) {
+      return { label: label, data: pts.map(function(p) { return p[key]; }), borderColor: COLORS[key], backgroundColor: COLORS[key],
+               borderWidth: key === 'tsb' ? 2.5 : 2, pointRadius: 0, tension: 0.25, hidden: !document.getElementById('lc-' + key).checked,
+               segment: { borderDash: proj }, yAxisID: 'y' };
+    }
+    var tss = { type: 'bar', label: 'TSS', data: pts.map(function(p) { return p.tss; }), backgroundColor: cssVar('--text-faint'), yAxisID: 'y2',
+                hidden: !document.getElementById('lc-tss').checked, order: 5, barPercentage: 0.9 };
+    var bands = { id: 'tsbBands', beforeDatasetsDraw: function(c) {
+      var a = c.chartArea, y = c.scales.y, ctx = c.ctx, edges = [-1e9].concat(D.bands).concat([1e9]);
+      ctx.save();
+      for (var i = 0; i < D.colors.length; i++) {
+        var top = Math.max(a.top, Math.min(a.bottom, y.getPixelForValue(edges[i + 1])));
+        var bottom = Math.max(a.top, Math.min(a.bottom, y.getPixelForValue(edges[i])));
+        if (bottom > top) { ctx.globalAlpha = 0.09; ctx.fillStyle = D.colors[i]; ctx.fillRect(a.left, top, a.right - a.left, bottom - top); }
+      }
+      ctx.globalAlpha = 1;
+      var x = c.scales.x.getPixelForValue(today);
+      ctx.strokeStyle = cssVar('--text-muted'); ctx.setLineDash([2, 3]); ctx.beginPath(); ctx.moveTo(x, a.top); ctx.lineTo(x, a.bottom); ctx.stroke();
+      ctx.restore();
+    } };
+    if (chart) chart.destroy();
+    chart = new Chart(document.getElementById('lc-canvas'), {
+      type: 'line',
+      data: { labels: labels, datasets: [line('ctl', 'CTL (forme)'), line('atl', 'ATL (fatigue)'), line('tsb', 'TSB (fraîcheur)'), tss] },
+      plugins: [bands],
+      options: { responsive: true, maintainAspectRatio: false, animation: false, interaction: { mode: 'index', intersect: false },
+        scales: { x: { grid: { display: false }, ticks: { maxTicksLimit: 8 } },
+                  y: { grid: { color: cssVar('--border') } },
+                  y2: { position: 'right', display: false, beginAtZero: true, grid: { drawOnChartArea: false }, max: 400 } },
+        plugins: { legend: { display: false },
+          tooltip: { callbacks: { title: function(items) { var i = items[0].dataIndex; return items[0].label + (i > today ? ' (prévision)' : i === today ? " (aujourd'hui)" : ''); } } } } }
+    });
+    chart.options.scales.y2.display = !chart.data.datasets[3].hidden;
+    chart.update();
+  }
+  function sync() {
+    if (!chart) return;
+    ['ctl', 'atl', 'tsb'].forEach(function(k, i) { chart.setDatasetVisibility(i, document.getElementById('lc-' + k).checked); });
+    var showTss = document.getElementById('lc-tss').checked;
+    chart.setDatasetVisibility(3, showTss);
+    chart.options.scales.y2.display = showTss;
+    chart.update();
+  }
+  details.addEventListener('toggle', function() { if (details.open && !chart) build(); });
+  document.getElementById('lc-range').addEventListener('change', build);
+  ['ctl', 'atl', 'tsb', 'tss'].forEach(function(k) { document.getElementById('lc-' + k).addEventListener('change', sync); });
+})();
+"##;
+
 fn render_activity_card(a: &ActivityRow) -> String {
     let bilan = a
         .bilan
@@ -815,76 +832,148 @@ fn render_activity_card(a: &ActivityRow) -> String {
     let route = a
         .route_svg
         .clone()
-        .unwrap_or_else(|| format!("<div class=\"route-thumb route-thumb-empty\" style=\"width:{ROUTE_THUMB_W}px;height:{ROUTE_THUMB_H}px\"></div>"));
+        .unwrap_or_else(|| {
+            format!(
+                "<div class=\"route-thumb route-thumb-empty\" style=\"width:{}px;height:{}px\"></div>",
+                crate::route_thumb::ROUTE_THUMB_W,
+                crate::route_thumb::ROUTE_THUMB_H,
+            )
+        });
 
     let stats = format!(
         r#"<div class="activity-stats">
 <div>📏 {:.1} km</div>
 <div>⏱ {}</div>
 <div>⛰ {:.0} m</div>
-{}{}
+{}{}{}
 </div>"#,
         a.distance_m / 1000.0,
         format_duration_hms(a.duration_s),
         a.elevation_gain_m,
-        a.tss.map(|t| format!("<div>🔥 {} {t:.0}</div>", annotate_acronyms("TSS"))).unwrap_or_default(),
+        if a.is_run {
+            format::format_pace(a.distance_m, a.duration_s)
+                .map(|p| format!("<div>🏃 {p} /km</div>"))
+                .unwrap_or_default()
+        } else {
+            String::new()
+        },
+        a.tss
+            .map(|t| format!("<div>🔥 {} {t:.0}</div>", annotate_acronyms(if a.is_run { "hrTSS" } else { "TSS" })))
+            .unwrap_or_default(),
         a.intensity_factor.map(|v| format!("<div>🎯 {} {v:.2}</div>", annotate_acronyms("IF"))).unwrap_or_default(),
     );
+
+    // Imported (GPX/FIT) activities use negative ids (see web::import) —
+    // there's no matching Strava activity to link to for those.
+    let strava_link = if a.id > 0 {
+        format!(
+            r#" · <a href="https://www.strava.com/activities/{}" target="_blank" rel="noopener">voir sur Strava ↗</a>"#,
+            a.id
+        )
+    } else {
+        String::new()
+    };
 
     format!(
         r#"<li class="activity-card">
 {route}
 <div class="activity-body">
-<div class="activity-meta"><a href="/activity/{}">{}</a> · <a href="https://www.strava.com/activities/{}" target="_blank" rel="noopener">voir sur Strava ↗</a></div>
+<div class="activity-meta"><a href="/activity/{}">{}</a>{strava_link}</div>
 {}
 </div>
 {stats}
 </li>"#,
         a.id,
         format_datetime_fr(&a.started_at),
-        a.id,
         bilan
     )
 }
 
+const SYNC_STATUS_CSS: &str = r#"
+.sync-status { margin: 0 0 1rem; padding: .6rem .9rem; border-radius: 6px; border: 1px solid currentColor; opacity: .85; }
+.sync-status.error { color: #c0392b; }
+.sync-status .spinner { display: inline-block; width: .8em; height: .8em; margin-right: .4em; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: sync-spin .8s linear infinite; }
+@keyframes sync-spin { to { transform: rotate(360deg); } }
+"#;
+
+/// Polls `/sync/status`; shows the current step while a sync runs and reloads
+/// the page once it finishes. Errors stay visible (the sync runs server-side).
+const SYNC_STATUS_JS: &str = r#"
+(function() {
+  var box = document.getElementById('sync-status');
+  var wasRunning = false;
+  function esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+  function tick() {
+    fetch('/sync/status').then(function(r) { return r.json(); }).then(function(p) {
+      if (p.running) {
+        wasRunning = true;
+        var pct = p.total > 0 ? ' (' + p.done + '/' + p.total + ')' : '';
+        box.hidden = false;
+        box.className = 'sync-status';
+        box.innerHTML = '<span class="spinner"></span> Synchronisation : ' + esc(p.step) + pct;
+        setTimeout(tick, 1000);
+      } else if (wasRunning) {
+        if (p.error) {
+          box.hidden = false;
+          box.className = 'sync-status error';
+          box.textContent = 'Échec de la synchronisation : ' + p.error;
+        } else {
+          location.reload();
+        }
+      }
+    }).catch(function() { setTimeout(tick, 3000); });
+  }
+  tick();
+})();
+"#;
+
 fn render_page(
     config: &AthleteConfig,
-    load: &LoadSummary,
+    load: &crate::metrics::DashboardSummary,
     activities: &[ActivityRow],
     calendar_activities: &[CalendarActivity],
-    digest: Option<&DigestRow>,
-    gym_equipment: &[String],
+    calendar_planned: &[CalendarPlanned],
+    load_chart_json: &str,
 ) -> String {
     let zone_bar_html = render_zone_bar(&load.zone_secs, config.ftp_watts as f64);
-    let tsb_gauge_html = render_tsb_gauge(load.ctl, load.atl, load.tsb);
+    let tsb_gauge_html = render_tsb_gauge(load.tsb, load.rest_days_to_next_band);
     let activity_items = activities.iter().map(render_activity_card).collect::<String>();
-    let calendar_html = render_calendar_html(calendar_activities);
+    let calendar_html = render_calendar_html(calendar_activities, calendar_planned);
 
-    format!(
-        r#"<!doctype html>
-<html lang="fr">
-<head>
-<meta charset="utf-8">
-<title>CyclAI</title>
-<style>{base_css}</style>
-</head>
-<body>
-<h1>CyclAI</h1>
-<p class="hint"><a href="/workouts">Séances &rarr;</a></p>
-<form method="post" action="/sync">
+    let actions = r#"<form method="post" action="/sync">
   <button type="submit">Synchroniser Strava</button>
+  <button type="submit" formaction="/sync/full" class="secondary" title="Importe aussi les activités plus anciennes pas encore en base (ex: courses à pied)">Tout l'historique</button>
 </form>
+<form method="post" action="/import" enctype="multipart/form-data">
+  <input type="file" name="file" accept=".gpx,.fit" required>
+  <button type="submit" class="secondary">Importer GPX/FIT</button>
+</form>"#;
+
+    let body = format!(
+        r#"{header}
+<div id="sync-status" class="sync-status" hidden></div>
+<script>{sync_status_js}</script>
+<div class="dash-grid">
+<div class="dash-main">
 
 <section>
-<h2>Config</h2>
-<form method="post" action="/config/ftp">
-  <label>{ftp_label} (W)
-  <input type="number" name="ftp_watts" value="{ftp}" min="1">
-  </label>
-  <button type="submit">Mettre à jour</button>
-</form>
-<p class="hint">HR max {hr_max}bpm / repos {hr_rest}bpm</p>
+<h2>Calendrier</h2>
+{calendar_html}
 </section>
+
+<section>
+<h2>Activités récentes</h2>
+<ul class="activity-list">{activity_items}</ul>
+<script>
+document.querySelectorAll('.activity-body .bilan:not(.pending)').forEach(function(p) {{
+  if (p.scrollHeight > p.clientHeight + 1) p.title = 'Cliquer pour tout afficher';
+  p.addEventListener('click', function() {{ p.classList.toggle('expanded'); }});
+}});
+</script>
+</section>
+
+</div>
+<div class="dash-side">
 
 <section>
 <h2>4 dernières semaines</h2>
@@ -895,48 +984,15 @@ fn render_page(
   <div class="stat"><div class="value">{tsb:.1}</div><div class="label">{tsb_label}</div></div>
 </div>
 {tsb_gauge_html}
+{load_chart_html}
 {zone_bar_html}
 </section>
 
-<section>
-<h2>Calendrier</h2>
-{calendar_html}
-</section>
-
-<section>
-<h2>Activités récentes</h2>
-<ul class="activity-list">{activity_items}</ul>
-</section>
-
-<section>
-<h2>Digest hebdomadaire</h2>
-<form method="post" action="/digest">
-  <label>Note libre (optionnel)
-  <input type="text" name="free_text" placeholder="ex: sortie longue prévue mardi">
-  </label>
-  <button type="submit">Générer mon digest</button>
-</form>
-<div class="workout-steps">
-{digest_html}
 </div>
-</section>
-
-<section>
-<h2>Config salle</h2>
-<form method="post" action="/config/gym">
-  <label>Équipement disponible (un par ligne)
-  <textarea name="equipment" rows="5">{gym_equipment}</textarea>
-  </label>
-  <button type="submit">Enregistrer</button>
-</form>
-</section>
-
-</body>
-</html>"#,
-        ftp_label = annotate_acronyms("FTP"),
-        ftp = config.ftp_watts,
-        hr_max = config.hr_max,
-        hr_rest = config.hr_rest,
+</div>"#,
+        load_chart_html = render_load_chart(load_chart_json),
+        sync_status_js = SYNC_STATUS_JS,
+        header = layout::page_header("Tableau de bord", "", actions),
         tss_period = load.tss_period,
         tss_label = annotate_acronyms("TSS"),
         ctl = load.ctl,
@@ -945,50 +1001,111 @@ fn render_page(
         atl_label = annotate_acronyms("ATL"),
         tsb = load.tsb,
         tsb_label = annotate_acronyms("TSB"),
-        digest_html = render_digest_section(digest),
-        gym_equipment = escape_html(&gym_equipment.join("\n")),
-        base_css = BASE_CSS,
+    );
+
+    layout::Page::new("", layout::Nav::Home, &body)
+        .css(&format!("{}{}", workout_chart::CHART_CSS, SYNC_STATUS_CSS))
+        .head(&format!(r#"<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>{}"#, workout_chart::CHART_JS))
+        .render()
+}
+
+/// "Digest hebdomadaire" card (generate button + latest digest), shown on the
+/// Séances page. `warn` is the `?warn=` flag set by the digest handlers.
+pub(super) async fn digest_section(pool: &SqlitePool, warn: Option<&str>) -> String {
+    let config = fetch_athlete_config(pool).await.expect("athlete_config seeded at startup");
+    let digest = fetch_latest_digest(pool).await.expect("digests query");
+    let has_api_key = crate::settings::fetch(pool).await.map(|s| s.has_llm_key()).unwrap_or(false);
+    let llm_notice_html = llm_notice(has_api_key, warn);
+    let digest_html = render_digest_section(digest.as_ref(), &config.athlete());
+    // The workout saved as a template from the latest digest, if it was valid.
+    let template_id: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM workouts WHERE digest_id = (SELECT MAX(id) FROM digests) LIMIT 1")
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+    let plan_link = template_id
+        .map(|id| format!(r#"<p><a class="btn secondary" href="/planned/new?from={id}">Planifier cette séance &rarr;</a></p>"#))
+        .unwrap_or_default();
+    format!(
+        r#"<section>
+<h2>Digest hebdomadaire</h2>
+{llm_notice_html}
+<form method="post" action="/digest">
+  <label>Note libre (optionnel)
+  <input type="text" name="free_text" placeholder="ex: sortie longue prévue mardi">
+  </label>
+  <button type="submit">Générer mon digest</button>
+  <button type="submit" formaction="/digest/report" class="secondary">Télécharger le rapport IA</button>
+</form>
+<div class="workout-steps">
+{digest_html}
+</div>
+{plan_link}
+<script>
+document.querySelectorAll('.clamp-3').forEach(function(p) {{
+  p.title = 'Cliquer pour tout afficher / réduire';
+  p.addEventListener('click', function() {{ p.classList.toggle('expanded'); }});
+}});
+</script>
+</section>
+"#
     )
+}
+
+#[derive(Deserialize, Default)]
+pub(super) struct WarnQuery {
+    pub(super) warn: Option<String>,
+}
+
+/// Shown next to every LLM action. Without an Anthropic key the action
+/// buttons would only fail silently server-side, so say so up front and point
+/// at the no-API workaround (a report file to paste into any chat assistant).
+/// `warn=llm_failed` is set by the handlers when the API call itself errored.
+pub(super) fn llm_notice(has_api_key: bool, warn: Option<&str>) -> String {
+    if warn == Some("llm_failed") {
+        return r#"<p class="warn-banner">L'appel à l'API Anthropic a échoué (clé invalide, quota, réseau…) — voir les logs. Le rapport IA reste téléchargeable pour l'analyser dans un assistant en ligne.</p>"#.to_string();
+    }
+    if !has_api_key {
+        return r#"<p class="warn-banner">Aucune clé API Anthropic configurée : la génération automatique est désactivée. Renseigne-la dans <a href="/settings">Paramètres</a>, ou télécharge le rapport IA et colle-le dans Claude, ChatGPT… pour obtenir la même analyse.</p>"#.to_string();
+    }
+    String::new()
+}
+
+/// Plain-text download response for the "rapport IA" files.
+pub(super) fn markdown_download(filename: &str, body: String) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "text/markdown; charset=utf-8".to_string()),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{filename}\""),
+            ),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 async fn dashboard(State(state): State<AppState>) -> Html<String> {
-    // Recomputed here (not just at sync) so CTL/ATL/TSB reflect rest days
-    // that have passed since the last sync — otherwise TSB looks frozen at
-    // whatever it was at last sync until the next activity comes in.
-    if let Err(err) = crate::metrics::recompute_daily_load(&state.pool).await {
-        tracing::error!(?err, "daily_load recompute on page load failed");
-    }
-
     let config = fetch_athlete_config(&state.pool)
         .await
         .expect("athlete_config seeded at startup");
-    let load = fetch_load_summary(&state.pool).await.expect("daily_load query");
+    // Single-row read of the precomputed summary; only rebuilt on the first
+    // page load of a new day (see `metrics::dashboard_summary`).
+    let load = crate::metrics::dashboard_summary(&state.pool).await.expect("dashboard summary");
     let activities = fetch_recent_activities(&state.pool).await.expect("activities query");
     let calendar_activities = fetch_calendar_activities(&state.pool).await.expect("calendar query");
-    let digest = fetch_latest_digest(&state.pool).await.expect("digests query");
-    let gym_equipment = fetch_gym_equipment(&state.pool).await.expect("gym_config query");
-    Html(render_page(&config, &load, &activities, &calendar_activities, digest.as_ref(), &gym_equipment))
-}
-
-#[derive(Deserialize)]
-struct FtpForm {
-    ftp_watts: i64,
-}
-
-/// Updates the FTP, then immediately re-runs the deterministic metrics
-/// pipeline so TSS/IF/zones retroactively reflect the new value across the
-/// whole history — matches the sync-time behavior in metrics::run.
-async fn update_ftp(State(state): State<AppState>, Form(form): Form<FtpForm>) -> Redirect {
-    let _ = sqlx::query(
-        "UPDATE athlete_config SET ftp_watts = ?, updated_at = datetime('now') WHERE id = 1",
-    )
-    .bind(form.ftp_watts)
-    .execute(&state.pool)
-    .await;
-
-    let _ = crate::metrics::run(&state.pool).await;
-
-    Redirect::to("/")
+    let calendar_planned = fetch_calendar_planned(&state.pool, &config.athlete()).await.expect("planned query");
+    Html(render_page(
+        &config,
+        &load,
+        &activities,
+        &calendar_activities,
+        &calendar_planned,
+        &load_chart_json(&state.pool).await,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -998,48 +1115,78 @@ struct DigestForm {
 }
 
 async fn trigger_digest(State(state): State<AppState>, Form(form): Form<DigestForm>) -> Redirect {
-    let client = crate::llm::AnthropicClient::new(state.config.anthropic_api_key.clone());
+    let Ok(settings) = crate::settings::fetch(&state.pool).await else {
+        tracing::error!("failed to load settings for digest generation");
+        return Redirect::to("/workouts");
+    };
+    if !settings.has_llm_key() {
+        tracing::warn!("digest requested without an Anthropic API key, skipping LLM call");
+        return Redirect::to("/workouts?warn=no_api_key");
+    }
+    let client = crate::llm::AnthropicClient::new(settings.anthropic_api_key.clone());
     let free_text = (!form.free_text.trim().is_empty()).then_some(form.free_text.as_str());
-    if let Err(err) =
-        crate::digest::generate(&state.pool, &client, free_text, &state.config.athlete_profile).await
+    if let Err(err) = crate::digest::generate(
+        &state.pool,
+        &client,
+        free_text,
+        &settings.athlete_profile,
+        &settings.digest_system_prompt,
+    )
+    .await
     {
         tracing::error!(?err, "digest generation failed");
+        return Redirect::to("/workouts?warn=llm_failed");
     }
-    Redirect::to("/")
+    Redirect::to("/workouts")
 }
 
-/// Runs a synchronous fetch/import from the dashboard, mirroring the `sync`
-/// CLI command — the only difference is it's triggered by a button instead
-/// of the systemd timer. Blocks the request until Strava sync + metrics +
-/// segment matching finish, same as the CLI invocation.
+/// No-API alternative to `trigger_digest`: same prompt + same data, as a
+/// markdown file to paste into any chat assistant.
+async fn digest_report(State(state): State<AppState>, Form(form): Form<DigestForm>) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let settings = match crate::settings::fetch(&state.pool).await {
+        Ok(s) => s,
+        Err(err) => {
+            tracing::error!(?err, "failed to load settings for digest report");
+            return Redirect::to("/workouts").into_response();
+        }
+    };
+    let free_text = (!form.free_text.trim().is_empty()).then_some(form.free_text.as_str());
+    match crate::digest::build_user_message(&state.pool, free_text, &settings.athlete_profile).await {
+        Ok(user_message) => {
+            let body = crate::report::render(
+                "Digest hebdomadaire",
+                &settings.digest_system_prompt,
+                &user_message,
+                crate::report::DIGEST_ANSWER_FORMAT,
+            );
+            let date = chrono::Utc::now().date_naive();
+            markdown_download(&format!("cyclai-digest-{date}.md"), body)
+        }
+        Err(err) => {
+            tracing::error!(?err, "digest report generation failed");
+            Redirect::to("/workouts").into_response()
+        }
+    }
+}
+
+/// Starts a Strava sync in the background and returns right away; the
+/// dashboard polls `/sync/status` to show the current step. Mirrors the `sync`
+/// CLI command (same pipeline), triggered by a button instead of the timer.
 async fn trigger_sync(State(state): State<AppState>) -> Redirect {
-    if let Err(err) = crate::sync::run(&state.pool, &state.config).await {
-        tracing::error!(?err, "manual sync failed");
-    }
+    crate::sync::spawn(state.pool.clone(), false);
     Redirect::to("/")
 }
 
-#[derive(Deserialize)]
-struct GymConfigForm {
-    #[serde(default)]
-    equipment: String,
+/// Same as `trigger_sync` but walks the whole Strava history for activities
+/// not stored yet — how runs from before running support get imported.
+async fn trigger_full_sync(State(state): State<AppState>) -> Redirect {
+    crate::sync::spawn(state.pool.clone(), true);
+    Redirect::to("/")
 }
 
-async fn update_gym_config(State(state): State<AppState>, Form(form): Form<GymConfigForm>) -> Redirect {
-    let items: Vec<&str> = form
-        .equipment
-        .lines()
-        .map(|l| l.trim())
-        .filter(|l| !l.is_empty())
-        .collect();
-    let equipment_json = serde_json::to_string(&items).unwrap_or_else(|_| "[]".to_string());
-
-    let _ = sqlx::query("UPDATE gym_config SET equipment_json = ? WHERE id = 1")
-        .bind(equipment_json)
-        .execute(&state.pool)
-        .await;
-
-    Redirect::to("/")
+async fn sync_status() -> axum::Json<crate::sync::Progress> {
+    axum::Json(crate::sync::progress())
 }
 
 #[cfg(test)]
@@ -1061,19 +1208,8 @@ mod tsb_gauge_tests {
     }
 
     #[test]
-    fn rest_simulation_reaches_target_and_reports_zero_when_already_there() {
-        // Already past the target.
-        assert_eq!(days_of_rest_to_reach(20.0, 5.0, 0.0), Some(0));
-        // ATL (7-day) decays faster than CTL (42-day) under pure rest, so
-        // TSB rises quickly at first — a couple of days to cross into Frais.
-        let days = days_of_rest_to_reach(28.9, 37.4, 0.0).expect("reachable within cap");
-        assert!((1..=5).contains(&days), "expected a small number of days, got {days}");
-    }
-
-    #[test]
-    fn unreachable_target_returns_none_within_cap() {
-        // With ctl=atl=0 (no history), TSB stays at 0 forever under rest —
-        // it can never climb into the Optimal band.
-        assert_eq!(days_of_rest_to_reach(0.0, 0.0, 10.0), None);
+    fn band_bounds_match_metrics_rest_estimate_bounds() {
+        let web: Vec<f64> = TSB_ZONES.iter().map(|(upper, _, _)| *upper).filter(|u| u.is_finite()).collect();
+        assert_eq!(web, crate::metrics::TSB_BAND_UPPER_BOUNDS.to_vec());
     }
 }

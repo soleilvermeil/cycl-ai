@@ -1,7 +1,11 @@
 use super::LlmClient;
 use sqlx::SqlitePool;
 
-const SYSTEM_PROMPT: &str = "Tu es un coach cyclisme qui commente une sortie de vélo pour un cycliste dont tu connais le profil complet. \
+/// Seeded into `settings.bilan_system_prompt` on first boot — editable
+/// afterwards from the dashboard's /settings page, this constant is no
+/// longer read at request time (see `generate_activity_bilans`'s
+/// `system_prompt` parameter).
+pub(crate) const DEFAULT_SYSTEM_PROMPT: &str = "Tu es un coach cyclisme qui commente une sortie de vélo pour un cycliste dont tu connais le profil complet. \
 Donne un bilan qualitatif court (2-4 phrases), concret, en te basant sur les deltas chiffrés fournis (comparaisons vs record perso, \
 moyenne récente, dernier passage). Style direct, factuel, pas de généralités. Exemple de ton attendu: \
 \"départ trop rapide sur la première partie de la côte (+9.5% vs ta moyenne perso)\", \
@@ -17,6 +21,7 @@ commenter uniquement la moyenne globale de la sortie.";
 
 struct ActivityDeltas {
     activity_id: i64,
+    is_run: bool,
     ftp_watts: f64,
     distance_km: f64,
     duration_min: f64,
@@ -51,6 +56,7 @@ struct LapRow {
 
 #[derive(sqlx::FromRow)]
 struct ActivityRow {
+    sport_type: String,
     distance_m: f64,
     duration_s: i64,
     elevation_gain_m: f64,
@@ -78,7 +84,7 @@ async fn fetch_activity_deltas(pool: &SqlitePool, activity_id: i64) -> anyhow::R
 
     let row: ActivityRow = sqlx::query_as(
         r#"
-        SELECT distance_m, duration_s, elevation_gain_m, avg_power_w, normalized_power_w,
+        SELECT sport_type, distance_m, duration_s, elevation_gain_m, avg_power_w, normalized_power_w,
                avg_hr, tss, intensity_factor,
                zone1_s, zone2_s, zone3_s, zone4_s, zone5_s, zone6_s, zone7_s,
                user_context, title, description
@@ -110,6 +116,7 @@ async fn fetch_activity_deltas(pool: &SqlitePool, activity_id: i64) -> anyhow::R
 
     Ok(ActivityDeltas {
         activity_id,
+        is_run: crate::metrics::is_run(&row.sport_type),
         ftp_watts: ftp_watts as f64,
         distance_km: row.distance_m / 1000.0,
         duration_min: row.duration_s as f64 / 60.0,
@@ -153,10 +160,21 @@ fn format_deltas(d: &ActivityDeltas) -> String {
     } else {
         0.0
     };
-    let mut out = format!(
-        "Sortie: {:.1}km, {:.0}min, {:.0}m D+ ({dplus_per_km:.0}m/km — pour référence, plat < 10m/km, vallonné 10-20m/km, montagneux > 20m/km), FTP de référence {:.0}W\n",
-        d.distance_km, d.duration_min, d.elevation_gain_m, d.ftp_watts
-    );
+    let mut out = if d.is_run {
+        // No power, no FTP-relative metrics for runs: pace and HR only.
+        let pace = crate::web::format::format_pace(d.distance_km * 1000.0, (d.duration_min * 60.0) as i64)
+            .map(|p| format!(", allure moyenne {p}/km"))
+            .unwrap_or_default();
+        format!(
+            "Course à pied: {:.1}km, {:.0}min, {:.0}m D+ ({dplus_per_km:.0}m/km){pace}\n",
+            d.distance_km, d.duration_min, d.elevation_gain_m
+        )
+    } else {
+        format!(
+            "Sortie: {:.1}km, {:.0}min, {:.0}m D+ ({dplus_per_km:.0}m/km — pour référence, plat < 10m/km, vallonné 10-20m/km, montagneux > 20m/km), FTP de référence {:.0}W\n",
+            d.distance_km, d.duration_min, d.elevation_gain_m, d.ftp_watts
+        )
+    };
     if let Some(p) = d.avg_power_w {
         out += &format!("Puissance moy: {p:.0}W");
         if let Some(np) = d.normalized_power_w {
@@ -169,6 +187,8 @@ fn format_deltas(d: &ActivityDeltas) -> String {
     }
     if let (Some(tss), Some(if_)) = (d.tss, d.intensity_factor) {
         out += &format!("TSS: {tss:.0}, IF: {if_:.2}\n");
+    } else if let (true, Some(tss)) = (d.is_run, d.tss) {
+        out += &format!("hrTSS (charge estimée via la FC): {tss:.0}\n");
     }
     let total_secs: i64 = d.zone_secs.iter().sum();
     if total_secs > 0 {
@@ -229,6 +249,11 @@ fn build_user_message(d: &ActivityDeltas, profile: &str) -> String {
         "Profil du cycliste:\n{profile}\n\nDeltas de la sortie du jour:\n{}",
         format_deltas(d)
     );
+    if d.is_run {
+        out += "\nNote: cette sortie est une course à pied, pas du vélo. Il n'y a ni puissance, ni FTP, ni segments, ni TSS \
+                pour les sorties à pied : commente l'allure (min/km), la régularité, la FC et le dénivelé, et ignore les \
+                références au vélo de la consigne.\n";
+    }
     // Strava's own title is often meaningful even when generic ("Morning
     // Ride" tells you nothing, but the athlete sometimes renames it e.g.
     // "Sortie difficile, jambes lourdes") — always non-empty from Strava,
@@ -248,6 +273,14 @@ fn build_user_message(d: &ActivityDeltas, profile: &str) -> String {
     out
 }
 
+/// The user message the LLM receives for one activity (profile + deltas +
+/// Strava title/description + user context). Used by the downloadable
+/// no-API report so a chat assistant is fed exactly what the API would be.
+pub async fn build_activity_message(pool: &SqlitePool, activity_id: i64, profile: &str) -> anyhow::Result<String> {
+    let deltas = fetch_activity_deltas(pool, activity_id).await?;
+    Ok(build_user_message(&deltas, profile))
+}
+
 /// Generates and stores a bilan for each given activity id, replacing any
 /// existing one — called both for newly-synced activities (no existing
 /// bilan, the DELETE is a no-op) and for a manual regeneration after the
@@ -258,11 +291,12 @@ pub async fn generate_activity_bilans<C: LlmClient>(
     client: &C,
     activity_ids: &[i64],
     profile: &str,
+    system_prompt: &str,
 ) -> anyhow::Result<()> {
     for &activity_id in activity_ids {
         let deltas = fetch_activity_deltas(pool, activity_id).await?;
         let user_message = build_user_message(&deltas, profile);
-        let text = client.complete(SYSTEM_PROMPT, &user_message).await?;
+        let text = client.complete(system_prompt, &user_message).await?;
 
         sqlx::query("DELETE FROM activity_bilans WHERE activity_id = ?")
             .bind(deltas.activity_id)
@@ -343,7 +377,7 @@ mod tests {
             response: "Bon effort.".to_string(),
         };
 
-        generate_activity_bilans(&pool, &client, &[1], TEST_PROFILE).await.unwrap();
+        generate_activity_bilans(&pool, &client, &[1], TEST_PROFILE, DEFAULT_SYSTEM_PROMPT).await.unwrap();
 
         let (stored_text,): (String,) =
             sqlx::query_as("SELECT text FROM activity_bilans WHERE activity_id = 1")
@@ -378,7 +412,7 @@ mod tests {
         .unwrap();
 
         let client = FakeClient { calls: Mutex::new(Vec::new()), response: "ok".to_string() };
-        generate_activity_bilans(&pool, &client, &[1], TEST_PROFILE).await.unwrap();
+        generate_activity_bilans(&pool, &client, &[1], TEST_PROFILE, DEFAULT_SYSTEM_PROMPT).await.unwrap();
         let msg = &client.calls.lock().unwrap()[0].1;
         assert!(msg.contains("Titre Strava de la sortie: \"Sortie difficile, jambes lourdes\""));
         assert!(msg.contains("Grosse chaleur aujourd'hui, 34°C"));
@@ -400,7 +434,7 @@ mod tests {
         .unwrap();
 
         let client = FakeClient { calls: Mutex::new(Vec::new()), response: "Premier bilan.".to_string() };
-        generate_activity_bilans(&pool, &client, &[1], TEST_PROFILE).await.unwrap();
+        generate_activity_bilans(&pool, &client, &[1], TEST_PROFILE, DEFAULT_SYSTEM_PROMPT).await.unwrap();
         assert!(!client.calls.lock().unwrap()[0].1.contains("Contexte additionnel"));
 
         sqlx::query("UPDATE activities SET user_context = ? WHERE id = 1")
@@ -410,7 +444,7 @@ mod tests {
             .unwrap();
 
         let client2 = FakeClient { calls: Mutex::new(Vec::new()), response: "Bilan tenant compte de la maladie.".to_string() };
-        generate_activity_bilans(&pool, &client2, &[1], TEST_PROFILE).await.unwrap();
+        generate_activity_bilans(&pool, &client2, &[1], TEST_PROFILE, DEFAULT_SYSTEM_PROMPT).await.unwrap();
         assert!(client2.calls.lock().unwrap()[0].1.contains("Contexte additionnel"));
         assert!(client2.calls.lock().unwrap()[0].1.contains("j'étais malade"));
 
@@ -444,7 +478,7 @@ mod tests {
             .unwrap();
 
         let client = FakeClient { calls: Mutex::new(Vec::new()), response: "ok".to_string() };
-        generate_activity_bilans(&pool, &client, &[1], TEST_PROFILE).await.unwrap();
+        generate_activity_bilans(&pool, &client, &[1], TEST_PROFILE, DEFAULT_SYSTEM_PROMPT).await.unwrap();
         assert!(!client.calls.lock().unwrap()[0].1.contains("Laps"));
 
         // Now add a real structured breakdown (3 laps).
@@ -463,7 +497,7 @@ mod tests {
             .execute(&pool).await.unwrap();
 
         let client2 = FakeClient { calls: Mutex::new(Vec::new()), response: "ok".to_string() };
-        generate_activity_bilans(&pool, &client2, &[2], TEST_PROFILE).await.unwrap();
+        generate_activity_bilans(&pool, &client2, &[2], TEST_PROFILE, DEFAULT_SYSTEM_PROMPT).await.unwrap();
         let msg = &client2.calls.lock().unwrap()[0].1;
         assert!(msg.contains("Laps"));
         assert!(msg.contains("Lap 1: 0:05:00, 210W, 150bpm"));

@@ -32,9 +32,33 @@ pub fn format_duration_hms(duration_s: i64) -> String {
     format!("{h}:{m:02}")
 }
 
+/// Running pace as "m:ss" per km (e.g. 5:12), from distance and moving time.
+/// `None` when there's no usable distance (treadmill without a sensor, etc.).
+pub fn format_pace(distance_m: f64, duration_s: i64) -> Option<String> {
+    if distance_m < 10.0 || duration_s <= 0 {
+        return None;
+    }
+    Some(format_pace_secs(duration_s as f64 / (distance_m / 1000.0)))
+}
+
+/// Formats seconds-per-km as "m:ss" (rounded to the nearest second).
+pub fn format_pace_secs(secs_per_km: f64) -> String {
+    let total = secs_per_km.round() as i64;
+    format!("{}:{:02}", total / 60, total % 60)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pace_is_minutes_seconds_per_km() {
+        // 10 km in 52:00 -> 5:12 /km
+        assert_eq!(format_pace(10_000.0, 3120).as_deref(), Some("5:12"));
+        assert_eq!(format_pace(0.0, 3120), None);
+        // Rounding carries into the minute: 299.6s -> 5:00
+        assert_eq!(format_pace_secs(299.6), "5:00");
+    }
 
     #[test]
     fn formats_utc_summer_time_to_paris_cest() {

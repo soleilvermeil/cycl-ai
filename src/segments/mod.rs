@@ -1,22 +1,28 @@
-use crate::config::Config;
 use crate::strava::StravaClient;
 use sqlx::SqlitePool;
 
 /// Distance under which a GPS point counts as "at" a segment endpoint.
 /// Consumer cycling-computer GPS is accurate to a few meters in the open,
-/// but tree cover / urban canyon can push errors past 20m — 40m gives
-/// margin without risking cross-matching nearby segments.
-const MATCH_THRESHOLD_M: f64 = 40.0;
+/// but tree cover / urban canyon can push errors past 20m — 15m is tight
+/// enough to avoid cross-matching nearby segments.
+const MATCH_THRESHOLD_M: f64 = 15.0;
 
 /// Fetches the user's starred Strava segments and upserts their coordinates
 /// into `reference_segments`. Starring the segment is a manual step on
 /// Strava's side (see README) — this only pulls coordinates, never uses
 /// Strava's own effort/segment_efforts calculations.
-pub async fn import_starred(pool: &SqlitePool, config: &Config) -> anyhow::Result<()> {
+pub async fn import_starred(pool: &SqlitePool) -> anyhow::Result<()> {
+    let settings = crate::settings::fetch(pool).await?;
+    let refresh_token: Option<String> =
+        sqlx::query_scalar::<_, Option<String>>("SELECT strava_refresh_token FROM sync_state WHERE id = 1")
+            .fetch_optional(pool)
+            .await?
+            .flatten();
+
     let client = StravaClient::authenticate(
-        &config.strava_client_id,
-        &config.strava_client_secret,
-        &config.strava_refresh_token,
+        &settings.strava_client_id,
+        &settings.strava_client_secret,
+        &refresh_token.unwrap_or_default(),
     )
     .await?;
 
@@ -45,6 +51,10 @@ pub async fn import_starred(pool: &SqlitePool, config: &Config) -> anyhow::Resul
         .execute(pool)
         .await?;
     }
+
+    // The sync skips matching when nothing new was imported, so match the
+    // existing rides against the (possibly new) segments right away.
+    run(pool).await?;
 
     Ok(())
 }
@@ -177,6 +187,7 @@ pub async fn run(pool: &SqlitePool) -> anyhow::Result<()> {
         SELECT a.id, s.streams_json
         FROM activities a
         JOIN activity_streams s ON s.activity_id = a.id
+        WHERE a.sport_type = 'Ride'
         ORDER BY a.started_at ASC
         "#,
     )

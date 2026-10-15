@@ -2,7 +2,10 @@ use crate::llm::LlmClient;
 use serde_json::{json, Value};
 use sqlx::SqlitePool;
 
-const SYSTEM_PROMPT: &str = r#"Tu es un coach cyclisme. Tu reçois un résumé structuré de la semaine d'entraînement d'un cycliste (charge, CTL/ATL/TSB, répartition zones, équipement salle disponible, éventuellement une note libre) ainsi que son profil complet.
+/// Seeded into `settings.digest_system_prompt` on first boot — editable
+/// afterwards from the dashboard's /settings page, this constant is no
+/// longer read at request time (see `generate`'s `system_prompt` parameter).
+pub(crate) const DEFAULT_SYSTEM_PROMPT: &str = r#"Tu es un coach cyclisme. Tu reçois un résumé structuré de la semaine d'entraînement d'un cycliste (charge, CTL/ATL/TSB, répartition zones, éventuellement une note libre) ainsi que son profil complet.
 
 Réponds UNIQUEMENT avec un objet JSON valide (aucun texte avant ou après), avec exactement cette forme :
 {
@@ -13,8 +16,7 @@ Réponds UNIQUEMENT avec un objet JSON valide (aucun texte avant ou après), ave
       {"type": "repeat", "count": N, "steps": [ ... steps imbriqués, y compris repeat imbriqués ... ]}
     ]
   },
-  "notes": "bilan qualitatif en français, 2-4 phrases, sur pourquoi cette séance est adaptée à la semaine et au profil",
-  "gym_suggestion": "string ou null — séance de renfort complémentaire si pertinent selon la charge et le profil du cycliste, en utilisant seulement l'équipement disponible listé"
+  "notes": "bilan qualitatif en français, 2-4 phrases, sur pourquoi cette séance est adaptée à la semaine et au profil"
 }
 
 Les puissances cibles (low/high) sont en watts, calibrées sur le FTP donné dans le profil. Le champ "terrain" par défaut est "plat" si non précisé."#;
@@ -26,7 +28,6 @@ fn structured_summary(
     atl: f64,
     tsb: f64,
     zone_secs: [i64; 7],
-    gym_equipment: &Value,
     free_text: Option<&str>,
 ) -> Value {
     let total: i64 = zone_secs.iter().sum();
@@ -42,7 +43,6 @@ fn structured_summary(
         "atl": atl,
         "tsb": tsb,
         "zone_pct_z1_to_z7": zone_pct,
-        "gym_equipment": gym_equipment,
         "free_text": free_text,
     })
 }
@@ -59,18 +59,11 @@ fn strip_code_fence(s: &str) -> &str {
     rest.strip_suffix("```").unwrap_or(rest).trim()
 }
 
+/// Same duration grammar as the session designer and planner (15min, 90s,
+/// 1h, 1h30, 1:30), so a digest workout is measured exactly like one that is
+/// later planned from it.
 fn parse_minutes(duration: &Value) -> f64 {
-    let s = duration.get("value").and_then(|v| v.as_str()).unwrap_or("0min");
-    let s = s.trim();
-    if let Some(n) = s.strip_suffix("min") {
-        n.trim().parse().unwrap_or(0.0)
-    } else if let Some(n) = s.strip_suffix("sec") {
-        n.trim().parse::<f64>().unwrap_or(0.0) / 60.0
-    } else if let Some(n) = s.strip_suffix('s') {
-        n.trim().parse::<f64>().unwrap_or(0.0) / 60.0
-    } else {
-        s.parse().unwrap_or(0.0)
-    }
+    crate::workout::parse_minutes(duration.get("value").and_then(|v| v.as_str()).unwrap_or("0min"))
 }
 
 /// Rough speed model calibrated on typical road-cycling paces: ~30km/h
@@ -127,7 +120,7 @@ fn estimate_distance_km(steps: &[Value], ftp: f64) -> f64 {
     total
 }
 
-async fn fetch_context(pool: &SqlitePool) -> anyhow::Result<(f64, f64, f64, f64, f64, [i64; 7], Value)> {
+async fn fetch_context(pool: &SqlitePool) -> anyhow::Result<(f64, f64, f64, f64, f64, [i64; 7])> {
     let (ftp_watts,): (i64,) = sqlx::query_as("SELECT ftp_watts FROM athlete_config WHERE id = 1")
         .fetch_one(pool)
         .await?;
@@ -154,12 +147,6 @@ async fn fetch_context(pool: &SqlitePool) -> anyhow::Result<(f64, f64, f64, f64,
     .fetch_one(pool)
     .await?;
 
-    let (equipment_json,): (String,) =
-        sqlx::query_as("SELECT equipment_json FROM gym_config WHERE id = 1")
-            .fetch_one(pool)
-            .await?;
-    let gym_equipment: Value = serde_json::from_str(&equipment_json).unwrap_or(json!([]));
-
     Ok((
         ftp_watts as f64,
         tss_28d,
@@ -167,8 +154,34 @@ async fn fetch_context(pool: &SqlitePool) -> anyhow::Result<(f64, f64, f64, f64,
         atl,
         tsb,
         [zones.0, zones.1, zones.2, zones.3, zones.4, zones.5, zones.6],
-        gym_equipment,
     ))
+}
+
+/// The user message sent to the LLM for a digest (profile + structured
+/// weekly summary), plus the summary itself for storage and the FTP used for
+/// the distance estimate. Shared by `generate` (API) and the downloadable
+/// report (`report::render`), so both feed an assistant the exact same data.
+async fn build_prompt(
+    pool: &SqlitePool,
+    free_text: Option<&str>,
+    profile: &str,
+) -> anyhow::Result<(f64, Value, String)> {
+    let (ftp_watts, tss_28d, ctl, atl, tsb, zone_secs) = fetch_context(pool).await?;
+    let summary = structured_summary(ftp_watts, tss_28d, ctl, atl, tsb, zone_secs, free_text);
+    let user_message = format!(
+        "Profil du cycliste:\n{profile}\n\nRésumé structuré de la semaine:\n{}",
+        serde_json::to_string_pretty(&summary)?
+    );
+    Ok((ftp_watts, summary, user_message))
+}
+
+/// User message only — see `build_prompt`; used by the no-API report download.
+pub async fn build_user_message(
+    pool: &SqlitePool,
+    free_text: Option<&str>,
+    profile: &str,
+) -> anyhow::Result<String> {
+    Ok(build_prompt(pool, free_text, profile).await?.2)
 }
 
 /// Generates a weekly digest: bundles the current training-load context
@@ -180,23 +193,17 @@ pub async fn generate<C: LlmClient>(
     client: &C,
     free_text: Option<&str>,
     profile: &str,
+    system_prompt: &str,
 ) -> anyhow::Result<()> {
-    let (ftp_watts, tss_28d, ctl, atl, tsb, zone_secs, gym_equipment) = fetch_context(pool).await?;
+    let (ftp_watts, summary, user_message) = build_prompt(pool, free_text, profile).await?;
 
-    let summary = structured_summary(ftp_watts, tss_28d, ctl, atl, tsb, zone_secs, &gym_equipment, free_text);
-    let user_message = format!(
-        "Profil du cycliste:\n{profile}\n\nRésumé structuré de la semaine:\n{}",
-        serde_json::to_string_pretty(&summary)?
-    );
-
-    let raw = client.complete(SYSTEM_PROMPT, &user_message).await?;
+    let raw = client.complete(system_prompt, &user_message).await?;
     let raw = strip_code_fence(&raw);
 
     // Captured when the LLM's "workout" object also parses as a valid
     // `workout::Workout` — persisted into `workouts` below (additive: does
     // not change what's stored in/read from `digests`) so AI-generated
-    // sessions are pushable to Garmin from the /workouts page just like
-    // hand-built ones. A workout that's valid JSON but doesn't match the
+    // sessions show up on the /workouts page like hand-built ones. A workout that's valid JSON but doesn't match the
     // typed schema is skipped here (logged), not a hard failure — the
     // digest itself still stores and displays fine either way.
     let mut workout_to_persist: Option<Value> = None;
@@ -219,7 +226,12 @@ pub async fn generate<C: LlmClient>(
             }
             if let Some(workout_value) = parsed.get("workout").cloned() {
                 match serde_json::from_value::<crate::workout::Workout>(workout_value.clone()) {
-                    Ok(_) => workout_to_persist = Some(workout_value),
+                    // Same checks as the designer / planner: a workout that
+                    // can't be edited or planned later isn't saved as a template.
+                    Ok(w) => match w.validate() {
+                        None => workout_to_persist = Some(workout_value),
+                        Some(reason) => tracing::warn!(reason, "digest workout failed validation, skipping workouts insert"),
+                    },
                     Err(err) => {
                         tracing::warn!(?err, "digest workout JSON didn't match the Workout schema, skipping workouts insert");
                     }
@@ -267,6 +279,24 @@ pub async fn generate<C: LlmClient>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn digest_workout_is_valid_for_the_planner_and_accepts_long_durations() {
+        let w = json!({"name": "Sweet spot", "steps": [
+            {"type": "warmup", "duration": {"type": "time", "value": "15min"}, "target": {"type": "power_range", "low": 120, "high": 150}, "terrain": "plat"},
+            {"type": "repeat", "count": 2, "steps": [
+                {"type": "interval", "duration": {"type": "time", "value": "1h"}, "target": {"type": "power_range", "low": 185, "high": 195}, "terrain": "vallonné", "note": "régulier"},
+                {"type": "recovery", "duration": {"type": "time", "value": "5min"}, "target": {"type": "power_range", "low": 100, "high": 120}}
+            ]}
+        ]});
+        // What the digest stores must go through the planner unchanged...
+        let ath = crate::workout::Athlete { ftp_watts: 205.0, hr_rest: 53.0, hr_max: 192.0, run_threshold_pace_s: 0.0 };
+        let prepared = crate::planned::prepare(&w, &ath, crate::planned::Sport::Cycling).expect("planner accepts the digest format");
+        assert_eq!(prepared.name, "Sweet spot");
+        // ...and "1h" must count (the old digest parser read it as 0 minutes).
+        let km = estimate_distance_km(w["steps"].as_array().unwrap(), 205.0);
+        assert!(km > 60.0, "2x1h at ~30 km/h should be well over 60 km, got {km}");
+    }
 
     #[test]
     fn distance_estimate_matches_readme_example() {
@@ -342,10 +372,6 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO gym_config (id, equipment_json) VALUES (1, '[]')")
-            .execute(&pool)
-            .await
-            .unwrap();
 
         let response = json!({
             "workout": {
@@ -356,13 +382,12 @@ mod tests {
                     {"type": "cooldown", "duration": {"type": "time", "value": "10min"}, "target": {"type": "power_range", "low": 100, "high": 130}}
                 ]
             },
-            "notes": "Séance seuil classique.",
-            "gym_suggestion": null
+            "notes": "Séance seuil classique."
         })
         .to_string();
         let client = FakeClient { response };
 
-        generate(&pool, &client, None, "profil de test").await.unwrap();
+        generate(&pool, &client, None, "profil de test", DEFAULT_SYSTEM_PROMPT).await.unwrap();
 
         let (name, source, digest_id): (String, String, Option<i64>) =
             sqlx::query_as("SELECT name, source, digest_id FROM workouts")
@@ -381,21 +406,16 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO gym_config (id, equipment_json) VALUES (1, '[]')")
-            .execute(&pool)
-            .await
-            .unwrap();
 
         // Valid JSON, but "steps" is missing entirely — fails Workout's schema.
         let response = json!({
             "workout": {"name": "Séance cassée"},
-            "notes": "notes",
-            "gym_suggestion": null
+            "notes": "notes"
         })
         .to_string();
         let client = FakeClient { response };
 
-        generate(&pool, &client, None, "profil de test").await.unwrap();
+        generate(&pool, &client, None, "profil de test", DEFAULT_SYSTEM_PROMPT).await.unwrap();
 
         let (digest_count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM digests")
             .fetch_one(&pool)

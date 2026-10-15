@@ -1,0 +1,9 @@
+/target
+.env
+*.db
+*.db-journal
+
+# Archive d image générée par update.ps1
+cyclai.tar
+.claude/scheduled_tasks.lock
+update.ps1

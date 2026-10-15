@@ -1,6 +1,7 @@
 mod bilan;
 
-pub use bilan::generate_activity_bilans;
+pub use bilan::{build_activity_message, generate_activity_bilans};
+pub(crate) use bilan::DEFAULT_SYSTEM_PROMPT as BILAN_DEFAULT_SYSTEM_PROMPT;
 
 use serde::{Deserialize, Serialize};
 
@@ -69,6 +70,12 @@ struct ContentBlock {
 
 impl LlmClient for AnthropicClient {
     async fn complete(&self, system: &str, user_message: &str) -> anyhow::Result<String> {
+        // Callers check `Settings::has_llm_key` first to show a proper
+        // warning; this is the backstop so a missed check fails with a clear
+        // message instead of an opaque 401 from the API.
+        if self.api_key.trim().is_empty() {
+            anyhow::bail!("no Anthropic API key configured");
+        }
         let body = MessagesRequest {
             model: MODEL,
             // Bilans are short (2-4 sentences), but digests need room for a

@@ -1,0 +1,8 @@
+target
+cyclai.db
+cyclai.db-journal
+.env
+.git
+.claude
+summary.md
+README.md

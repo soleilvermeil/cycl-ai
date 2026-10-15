@@ -1,8 +1,12 @@
 use std::env;
 
-/// Runtime configuration loaded from environment variables (`.env` in dev).
-/// FTP and other athlete constants live here, not hardcoded, so they can be
-/// updated after a future FTP retest without touching source.
+/// Bootstrap configuration loaded from environment variables (`.env` in
+/// dev), used only to seed the DB-backed `settings`/`athlete_config`/
+/// `sync_state` tables on first boot. After that first run, the dashboard's
+/// /settings page owns these values and env vars are no longer read —
+/// fields below default to empty/zero rather than erroring so the app still
+/// starts (and lets the user fill them in via /settings) even without a
+/// populated .env.
 #[derive(Clone)]
 pub struct Config {
     pub database_url: String,
@@ -13,10 +17,6 @@ pub struct Config {
     pub ftp_watts: u32,
     pub hr_max: u32,
     pub hr_rest: u32,
-    /// Free-form athlete profile (goals, terrain, equipment, physiology)
-    /// re-injected into every LLM prompt alongside the deterministic
-    /// deltas — kept out of source entirely since it's personal, unlike
-    /// FTP/HR which double as calculation inputs.
     pub athlete_profile: String,
 }
 
@@ -26,10 +26,10 @@ impl Config {
 
         Ok(Self {
             database_url: env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://cyclai.db".into()),
-            strava_client_id: env::var("STRAVA_CLIENT_ID")?,
-            strava_client_secret: env::var("STRAVA_CLIENT_SECRET")?,
-            strava_refresh_token: env::var("STRAVA_REFRESH_TOKEN")?,
-            anthropic_api_key: env::var("ANTHROPIC_API_KEY")?,
+            strava_client_id: env::var("STRAVA_CLIENT_ID").unwrap_or_default(),
+            strava_client_secret: env::var("STRAVA_CLIENT_SECRET").unwrap_or_default(),
+            strava_refresh_token: env::var("STRAVA_REFRESH_TOKEN").unwrap_or_default(),
+            anthropic_api_key: env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
             ftp_watts: env::var("FTP_WATTS")
                 .unwrap_or_else(|_| "200".into())
                 .parse()?,
