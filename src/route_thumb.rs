@@ -1,8 +1,7 @@
 //! Route-shape thumbnail SVG (like Strava's own small previews), computed
 //! once from an activity's raw GPS stream and cached in
-//! `activities.route_thumb_svg` (see `sync::run` and
-//! `db::backfill_route_thumbnails`) instead of being re-parsed from the full
-//! streams JSON on every dashboard load — a 2h ride at 1Hz is ~7000 GPS
+//! `activities.route_thumb_svg` (see `sync::run`) instead of being re-parsed
+//! from the full streams JSON on every dashboard load — a 2h ride at 1Hz is ~7000 GPS
 //! points, and the dashboard lists 10 activities per page.
 
 pub const ROUTE_THUMB_W: f64 = 96.0;

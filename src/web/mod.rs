@@ -1,10 +1,12 @@
 mod api;
+mod auth;
 mod detail;
 pub(crate) mod format;
 mod import;
 mod layout;
 mod planned;
 mod route;
+mod segments;
 mod settings;
 mod stats;
 mod workout;
@@ -26,13 +28,21 @@ struct AppState {
     pool: SqlitePool,
 }
 
-pub async fn serve(pool: SqlitePool) -> anyhow::Result<()> {
+/// Web UI only (dashboard, settings, imports…) — meant for a private network.
+/// The JSON API lives in `serve_api`.
+pub async fn serve(pool: SqlitePool, bind: &str) -> anyhow::Result<()> {
     if let Ok(s) = crate::settings::fetch(&pool).await {
         layout::set_theme(&s.theme_color, &s.theme_mode);
     }
     let state = AppState { pool };
     let app = Router::new()
         .route("/", get(dashboard))
+        .route("/favicon.ico", get(favicon))
+        .route("/manifest.webmanifest", get(|| pwa_asset("application/manifest+json", include_bytes!("../../assets/manifest.webmanifest"))))
+        .route("/sw.js", get(|| pwa_asset("text/javascript", include_bytes!("../../assets/sw.js"))))
+        .route("/icon-192.png", get(|| pwa_asset("image/png", include_bytes!("../../assets/icon-192.png"))))
+        .route("/icon-512.png", get(|| pwa_asset("image/png", include_bytes!("../../assets/icon-512.png"))))
+        .route("/apple-touch-icon.png", get(|| pwa_asset("image/png", include_bytes!("../../assets/apple-touch-icon.png"))))
         .route("/activity/{id}", get(detail::activity_detail))
         .route("/activity/{id}/context", post(detail::regenerate_bilan))
         .route("/activity/{id}/report", post(detail::activity_report))
@@ -40,6 +50,7 @@ pub async fn serve(pool: SqlitePool) -> anyhow::Result<()> {
         .route("/workouts", get(workout::list).post(workout::create))
         .route("/workouts/{id}", get(workout::edit_form).post(workout::update))
         .route("/workouts/{id}/delete", post(workout::delete))
+        .route("/workouts/{id}/zwo", get(workout::export_zwo))
         .route("/planned/new", get(planned::new_form))
         .route("/planned", post(planned::create))
         .route("/planned/{id}", get(planned::edit_form).post(planned::update))
@@ -52,15 +63,8 @@ pub async fn serve(pool: SqlitePool) -> anyhow::Result<()> {
         .route("/import", post(import::import_activity))
         .route("/route", get(route::page).post(route::analyze))
         .route("/stats", get(stats::page))
-        .route("/api/v1/profile", get(api::profile))
-        .route("/api/v1/load", get(api::load))
-        .route("/api/v1/summary", get(api::summary))
-        .route("/api/v1/activities", get(api::activities))
-        .route("/api/v1/activities/{id}", get(api::activity))
-        .route("/api/v1/activities/{id}/streams", get(api::activity_streams))
-        .route("/api/v1/workouts", get(api::workouts))
-        .route("/api/v1/planned", get(api::planned_list).post(api::planned_create))
-        .route("/api/v1/planned/{id}", axum::routing::delete(api::planned_delete))
+        .route("/segments", get(segments::page))
+        .route("/segments/import", post(segments::import))
         .route("/settings", get(settings::page))
         .route("/settings/keys", post(settings::update_keys))
         .route("/settings/profile", post(settings::update_profile))
@@ -72,10 +76,59 @@ pub async fn serve(pool: SqlitePool) -> anyhow::Result<()> {
         .layer(axum::extract::DefaultBodyLimit::max(25 * 1024 * 1024))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
-    tracing::info!("dashboard listening on http://0.0.0.0:3000");
+    let listener = tokio::net::TcpListener::bind(bind).await?;
+    tracing::info!("dashboard listening on http://{bind}");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+async fn favicon() -> impl axum::response::IntoResponse {
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "image/x-icon"),
+            (axum::http::header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        include_bytes!("../../assets/favicon.ico").as_slice(),
+    )
+}
+
+/// Static PWA files (manifest, service worker, icons). `no-cache` on all of
+/// them so a changed service worker or manifest is picked up right away.
+async fn pwa_asset(content_type: &'static str, body: &'static [u8]) -> impl axum::response::IntoResponse {
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, content_type),
+            (axum::http::header::CACHE_CONTROL, "no-cache"),
+        ],
+        body,
+    )
+}
+
+/// JSON API only, every request guarded by an RS256 bearer token checked
+/// against the `api_keys` table. This is the process that can be exposed.
+pub async fn serve_api(pool: SqlitePool, bind: &str) -> anyhow::Result<()> {
+    let app = api_router(AppState { pool });
+    let listener = tokio::net::TcpListener::bind(bind).await?;
+    tracing::info!("api listening on http://{bind}");
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+fn api_router(state: AppState) -> Router {
+    Router::new()
+        .route("/api/v1/profile", get(api::profile))
+        .route("/api/v1/load", get(api::load))
+        .route("/api/v1/summary", get(api::summary))
+        .route("/api/v1/activities", get(api::activities))
+        .route("/api/v1/activities/{id}", get(api::activity))
+        .route("/api/v1/activities/{id}/streams", get(api::activity_streams))
+        .route("/api/v1/workouts", get(api::workouts))
+        .route("/api/v1/planned", get(api::planned_list).post(api::planned_create))
+        .route("/api/v1/planned/{id}", axum::routing::delete(api::planned_delete))
+        // `layer` (not `route_layer`): unknown paths answer 401 too, so the
+        // exposed process reveals nothing about what it does or doesn't serve.
+        .layer(axum::middleware::from_fn_with_state(state.clone(), auth::require_api_key))
+        .with_state(state)
 }
 
 struct AthleteConfig {
@@ -125,8 +178,7 @@ async fn fetch_athlete_config(pool: &SqlitePool) -> anyhow::Result<AthleteConfig
 }
 
 /// Reads each activity's route thumbnail from `activities.route_thumb_svg`
-/// (populated at sync/import time and by the boot backfill — see
-/// `sync::run` and `db::backfill_route_thumbnails`) instead of parsing the
+/// (populated at sync/import time — see `sync::run`) instead of parsing the
 /// full GPS stream on every dashboard load. Deliberately doesn't join
 /// `activity_streams`, whose rows carry the full multi-hundred-KB streams.
 #[allow(clippy::type_complexity)]
@@ -278,6 +330,11 @@ fn render_calendar_html(activities: &[CalendarActivity], planned: &[CalendarPlan
         // yet" next to the solid completed rides.
         serde_json::json!({
             "title": format!("{}{} {} · {}", if p.done { "✓ " } else { "" }, p.sport.icon(), p.name, format_duration_hms((p.minutes * 60.0).round() as i64)),
+            // Compact chip in the cell (the full name goes in the tooltip).
+            "extendedProps": {
+                "l1": format!("{}{} {}", if p.done { "✓ " } else { "" }, p.sport.icon(), format_duration_hms((p.minutes * 60.0).round() as i64)),
+                "l2": "",
+            },
             "start": p.date,
             "allDay": true,
             "url": format!("/planned/{}", p.id),
@@ -293,9 +350,12 @@ fn render_calendar_html(activities: &[CalendarActivity], planned: &[CalendarPlan
         .map(|a| {
             let prefix = if a.is_run { "🏃 " } else { "" };
             let title = match a.tss {
-                Some(tss) => format!("{prefix}{:.0} km · {} {:.0}", a.distance_km, if a.is_run { "hrTSS" } else { "TSS" }, tss),
+                Some(tss) => format!("{prefix}{:.0} km · 🔥 {:.0}", a.distance_km, tss),
                 None => format!("{prefix}{:.0} km", a.distance_km),
             };
+            // Two lines so both values fit the narrow day cell.
+            let line1 = format!("{prefix}{:.0} km", a.distance_km);
+            let line2 = a.tss.map(|t| format!("🔥 {t:.0}")).unwrap_or_default();
             // Runs have no intensity factor (no power), so they get their own
             // teal instead of the "unknown" grey rides fall back to.
             let color = if a.is_run {
@@ -307,6 +367,7 @@ fn render_calendar_html(activities: &[CalendarActivity], planned: &[CalendarPlan
             let text_color = if color == ZONE_COLORS[3] { "#1f2430" } else { "#fff" };
             serde_json::json!({
                 "title": title,
+                "extendedProps": { "l1": line1, "l2": line2 },
                 "start": a.date,
                 "allDay": true,
                 "url": format!("/activity/{}", a.id),
@@ -339,6 +400,11 @@ document.addEventListener('DOMContentLoaded', function() {{
       }},
     }},
     events: {events_json},
+    eventContent: function(arg) {{
+      var p = arg.event.extendedProps;
+      return {{ html: '<div class="cal-ev"><div>' + p.l1 + '</div>' + (p.l2 ? '<div>' + p.l2 + '</div>' : '') + '</div>' }};
+    }},
+    eventDidMount: function(info) {{ info.el.title = info.event.title; }},
     dateClick: function(info) {{ window.location.href = '/planned/new?date=' + info.dateStr; }},
   }});
   calendar.render();

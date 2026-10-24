@@ -104,14 +104,16 @@ pub(super) enum Nav {
     Home,
     Workouts,
     Stats,
+    Segments,
     Route,
     Settings,
 }
 
-const NAV_ITEMS: [(Nav, &str, &str); 5] = [
+const NAV_ITEMS: [(Nav, &str, &str); 6] = [
     (Nav::Home, "/", "Tableau de bord"),
     (Nav::Workouts, "/workouts", "Séances"),
     (Nav::Stats, "/stats", "Statistiques"),
+    (Nav::Segments, "/segments", "Segments"),
     (Nav::Route, "/route", "Itinéraire"),
     (Nav::Settings, "/settings", "Paramètres"),
 ];
@@ -170,7 +172,11 @@ impl<'a> Page<'a> {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232563eb'/%3E%3Cpath d='M6 21l6-7 5 4 9-11' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="theme-color" content="#0e1218">
+<script>if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js');</script>
 <style>{base_css}{theme_css}{css}</style>
 {head}
 {theme_js}
@@ -458,7 +464,9 @@ abbr[data-tip]:hover::after {
 }
 #calendar .fc-daygrid-day-number { color: var(--text); font-size: 0.8rem; }
 #calendar .fc-col-header-cell-cushion { color: var(--text-muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; }
-#calendar .fc-event { border-radius: 5px; padding: 1px 3px; cursor: pointer; }
+#calendar .fc-event { border-radius: 5px; padding: 2px 4px; cursor: pointer; white-space: normal; }
+#calendar .cal-ev { line-height: 1.25; font-weight: 600; text-align: center; overflow: hidden; }
+#calendar .fc-daygrid-event-harness { margin-top: 2px; }
 #calendar .fc-event.planned-event { border-style: dashed; border-width: 1.5px; font-weight: 500; }
 #calendar .fc-daygrid-day { cursor: pointer; }
 #calendar a { color: inherit; text-decoration: none; }

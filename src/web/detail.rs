@@ -1019,11 +1019,14 @@ pub async fn activity_detail(
         let mut cursor_s: i64 = 0;
         let rows = laps
             .iter()
-            .map(|l| {
+            .enumerate()
+            .map(|(pos, l)| {
                 let start_km = distance_at_time_s(&time, distance.as_deref().unwrap_or(&[]), cursor_s as f64) / 1000.0;
                 cursor_s += l.elapsed_time_s;
                 let end_km = distance_at_time_s(&time, distance.as_deref().unwrap_or(&[]), cursor_s as f64) / 1000.0;
-                let lap_index = l.lap_index;
+                // Position in the sorted list, matching LAP_ZONES — the stored
+                // `lap_index` is 0-based from Strava but 1-based from imports.
+                let lap_index = pos + 1;
                 format!(
                     "<tr class=\"lap-row\" \
                      onclick=\"window.zoomToRange({start_km},{end_km});window.highlightLapInZones && window.highlightLapInZones({lap_index});this.classList.add('lap-row-active')\" \

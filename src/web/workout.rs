@@ -104,14 +104,54 @@ pub async fn edit_form(State(state): State<AppState>, Path(id): Path<i64>) -> Ht
 </form>"#
     );
 
+    let zwo_link = if Sport::from_db(&row.sport) == Sport::Cycling {
+        format!(r#"<p><a class="secondary-action" href="/workouts/{id}/zwo" download>Exporter pour Zwift (.zwo)</a></p>"#)
+    } else {
+        String::new()
+    };
+
     Html(page_shell(
         "Modifier la séance",
         &format!(
             r#"<a class="back-link" href="/workouts">&larr; Retour aux séances</a>
-<section><h2>Modifier: {name}</h2>{form}{delete_form}</section>"#,
+<section><h2>Modifier: {name}</h2>{form}{zwo_link}{delete_form}</section>"#,
             name = escape_html(&row.name)
         ),
     ))
+}
+
+/// `GET /workouts/{id}/zwo` — the saved session as a Zwift workout file.
+pub async fn export_zwo(State(state): State<AppState>, Path(id): Path<i64>) -> axum::response::Response {
+    use axum::http::{header, StatusCode};
+    use axum::response::IntoResponse;
+    let row: Option<(String, String)> = sqlx::query_as("SELECT name, steps_json FROM workouts WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&state.pool)
+        .await
+        .ok()
+        .flatten();
+    let Some((name, steps_json)) = row else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let Ok(mut workout) = serde_json::from_str::<crate::workout::Workout>(&steps_json) else {
+        return StatusCode::UNPROCESSABLE_ENTITY.into_response();
+    };
+    if workout.name.trim().is_empty() {
+        workout.name = name.clone();
+    }
+    let ath = fetch_athlete(&state.pool).await;
+    let file: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
+        .collect();
+    (
+        [
+            (header::CONTENT_TYPE, "application/xml; charset=utf-8".to_string()),
+            (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{file}.zwo\"")),
+        ],
+        crate::zwo::to_zwo(&workout, &ath),
+    )
+        .into_response()
 }
 
 #[derive(Deserialize)]

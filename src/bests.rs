@@ -1,7 +1,7 @@
 //! Per-activity records feeding the Statistiques page: best average power
 //! over benchmark durations and best time over benchmark distances. Computed
-//! once from the raw streams (at sync / import, and by a boot backfill for
-//! older rows) into `activity_bests`, so the page never parses streams.
+//! once from the raw streams (at sync / import) into `activity_bests`, so
+//! the page never parses streams.
 
 use crate::performance::{best_average, Series};
 use serde_json::Value;
@@ -76,28 +76,6 @@ pub async fn store(pool: &SqlitePool, activity_id: i64, is_run: bool, streams: &
             .bind(value)
             .execute(pool)
             .await?;
-    }
-    sqlx::query("UPDATE activities SET bests_computed = 1 WHERE id = ?").bind(activity_id).execute(pool).await?;
-    Ok(())
-}
-
-/// Computes the records of every activity stored before this feature
-/// existed. A no-op once all rows are flagged `bests_computed`.
-pub async fn backfill(pool: &SqlitePool) -> anyhow::Result<()> {
-    let ids: Vec<(i64, String)> = sqlx::query_as("SELECT id, sport_type FROM activities WHERE bests_computed = 0")
-        .fetch_all(pool)
-        .await?;
-    if ids.is_empty() {
-        return Ok(());
-    }
-    tracing::info!(count = ids.len(), "computing activity records");
-    for (id, sport) in ids {
-        let streams: Option<String> = sqlx::query_scalar("SELECT streams_json FROM activity_streams WHERE activity_id = ?")
-            .bind(id)
-            .fetch_optional(pool)
-            .await?;
-        let parsed = streams.and_then(|s| serde_json::from_str::<Value>(&s).ok()).unwrap_or(Value::Null);
-        store(pool, id, crate::metrics::is_run(&sport), &parsed).await?;
     }
     Ok(())
 }

@@ -138,7 +138,7 @@ fn extract_portion(
     }
 }
 
-fn f64_array(v: &serde_json::Value, key: &str) -> Option<Vec<f64>> {
+pub(crate) fn f64_array(v: &serde_json::Value, key: &str) -> Option<Vec<f64>> {
     v.get(key)?
         .get("data")?
         .as_array()?
@@ -147,7 +147,7 @@ fn f64_array(v: &serde_json::Value, key: &str) -> Option<Vec<f64>> {
         .collect()
 }
 
-fn latlng_array(v: &serde_json::Value) -> Option<Vec<[f64; 2]>> {
+pub(crate) fn latlng_array(v: &serde_json::Value) -> Option<Vec<[f64; 2]>> {
     v.get("latlng")?
         .get("data")?
         .as_array()?

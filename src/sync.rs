@@ -116,8 +116,8 @@ async fn run_inner(pool: &SqlitePool, full: bool) -> anyhow::Result<()> {
     let fetched = client.list_activities_after(last_sync_epoch).await?;
     tracing::info!(count = fetched.len(), "activities fetched from Strava");
 
-    // CyclAI covers road cycling and running — MTB/gravel, weight training
-    // etc. from the same Strava account must never enter the pipeline.
+    // CyclAI covers road and indoor cycling and running — MTB/gravel, weight
+    // training etc. from the same Strava account must never enter the pipeline.
     // sport_type (not the legacy `type` field) is what actually distinguishes
     // GravelRide from Ride.
     let activities: Vec<_> = fetched
@@ -144,7 +144,7 @@ async fn run_inner(pool: &SqlitePool, full: bool) -> anyhow::Result<()> {
 
         // Power-based metrics (NP/TSS/IF/zones) are cycling-only and relative
         // to the cycling FTP — a run's power (e.g. a foot pod) is ignored.
-        let is_ride = activity.sport_type == "Ride";
+        let is_ride = crate::metrics::is_ride(&activity.sport_type);
         let normalized_power = activity
             .weighted_average_watts
             .filter(|_| is_ride && activity.device_watts.unwrap_or(false));
@@ -186,8 +186,7 @@ async fn run_inner(pool: &SqlitePool, full: bool) -> anyhow::Result<()> {
         set_step(format!("{label} : traitement des données"), i, total);
         let streams_json = streams.to_string();
         let streams_json_for_points = streams_json.clone();
-        // '' (not NULL) when there's no GPS data, so the boot backfill for
-        // pre-existing rows doesn't keep reprocessing this activity forever.
+        // '' (not NULL) when there's no GPS data.
         let route_thumb_svg = crate::route_thumb::compute(&streams_json).unwrap_or_default();
         sqlx::query(
             r#"

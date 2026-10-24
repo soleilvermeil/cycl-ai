@@ -1,0 +1,33 @@
+# Deux processus, une image, une base SQLite partagée (volume local :
+# SQLite/WAL ne tient pas sur un partage réseau).
+#
+#  - cyclai-ui  : dashboard + /settings, SANS API. À garder dans le tailnet
+#                 (ex. `tailscale serve --bg 3000`), jamais en funnel.
+#  - cyclai-api : API JSON seule, chaque requête exige un JWT RS256 signé par
+#                 une clé enregistrée (`cyclai api-key add`). C'est elle qu'on
+#                 peut exposer (ex. `tailscale funnel --bg 3001`).
+services:
+  cyclai-ui:
+    image: cyclai
+    build: .
+    command: ["serve"]
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - cyclai-data:/data
+    env_file: .env
+
+  cyclai-api:
+    image: cyclai
+    command: ["serve-api"]
+    restart: unless-stopped            # relance si la 1re migration se joue en parallèle de l'UI
+    depends_on:
+      - cyclai-ui
+    ports:
+      - "3001:3001"
+    volumes:
+      - cyclai-data:/data
+
+volumes:
+  cyclai-data:

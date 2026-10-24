@@ -5,7 +5,13 @@ use sqlx::SqlitePool;
 /// (NP/TSS/IF/zones/segments); runs get pace + HR and an HR-based TSS
 /// (`hr_tss`), and no power zones/segments.
 pub fn is_supported_sport(sport_type: &str) -> bool {
-    matches!(sport_type, "Ride" | "Run" | "TrailRun")
+    matches!(sport_type, "Ride" | "VirtualRide" | "Run" | "TrailRun")
+}
+
+/// Road rides and indoor/trainer rides (Strava `VirtualRide`: Zwift, smart
+/// trainer) share the power-based pipeline.
+pub fn is_ride(sport_type: &str) -> bool {
+    matches!(sport_type, "Ride" | "VirtualRide")
 }
 
 pub fn is_run(sport_type: &str) -> bool {
@@ -117,7 +123,7 @@ const LOAD_WINDOW_DAYS: i64 = 27;
 pub const TSB_BAND_UPPER_BOUNDS: [f64; 5] = [-30.0, -10.0, 0.0, 10.0, 25.0];
 
 /// Everything the dashboard's "4 dernières semaines" card displays,
-/// precomputed (see migration `consolidation`, table `dashboard_summary`).
+/// precomputed (table `dashboard_summary`).
 pub struct DashboardSummary {
     pub tss_period: f64,
     pub ctl: f64,
@@ -224,7 +230,7 @@ pub async fn refresh_dashboard_summary(pool: &SqlitePool) -> anyhow::Result<()> 
 
 /// What the dashboard calls on every page load: a single-row read, with a
 /// refresh only when the stored row was computed on an earlier day (or
-/// doesn't exist yet, e.g. right after the migration).
+/// doesn't exist yet, e.g. on a fresh database).
 pub async fn dashboard_summary(pool: &SqlitePool) -> anyhow::Result<DashboardSummary> {
     let today = chrono::Utc::now().date_naive().to_string();
     for attempt in 0..2 {

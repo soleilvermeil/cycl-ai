@@ -8,6 +8,7 @@ RUN mkdir src && echo "fn main() {}" > src/main.rs \
     && rm -rf src
 
 COPY src ./src
+COPY assets ./assets
 COPY migrations ./migrations
 # sqlx::migrate! embeds migration files at compile time, so touch main.rs to
 # force a rebuild past the dummy binary cached above.
@@ -24,6 +25,6 @@ COPY --from=builder /app/target/release/cyclai /usr/local/bin/cyclai
 VOLUME ["/data"]
 ENV DATABASE_URL=sqlite:///data/cyclai.db
 
-EXPOSE 3000
+EXPOSE 3000 3001
 ENTRYPOINT ["cyclai"]
 CMD ["serve"]

@@ -1,7 +1,8 @@
 //! JSON API (`/api/v1/...`) over the data the dashboard shows, for external
 //! tools (home dashboards, scripts, other assistants). Everything is read-only
-//! except scheduling: `POST/DELETE /planned` put sessions on the calendar. No
-//! auth, like the rest of the app — it's meant to sit behind the VPN.
+//! except scheduling: `POST/DELETE /planned` put sessions on the calendar.
+//! Served by `web::serve_api` only, behind the RS256 bearer-token guard in
+//! `web::auth`.
 
 use super::detail::{HR_ZONE_BOUNDS, HR_ZONE_NAMES};
 use super::{tsb_zone_index, AppState, TSB_ZONES, ZONE_BOUNDS, ZONE_NAMES};
@@ -215,7 +216,7 @@ pub(super) async fn activities(State(state): State<AppState>, Query(q): Query<Ac
     // No `days` means no lower bound: every started_at sorts after "".
     let since = q.days.map(|d| days_ago(d.clamp(1, 3650))).unwrap_or_default();
     let sport_filter = match q.sport.as_deref() {
-        Some("ride") => "AND sport_type = 'Ride'",
+        Some("ride") => "AND sport_type IN ('Ride', 'VirtualRide')",
         Some("run") => "AND sport_type IN ('Run', 'TrailRun')",
         _ => "",
     };
