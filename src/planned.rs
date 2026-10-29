@@ -87,7 +87,8 @@ pub fn parse_date(s: &str) -> Option<NaiveDate> {
 /// and computes its distance estimate (see below). The error is a user-facing
 /// message.
 pub fn prepare(workout: &Value, athlete: &Athlete, sport: Sport) -> Result<Prepared, String> {
-    let workout: Workout = serde_json::from_value(workout.clone()).map_err(|e| format!("JSON invalide : {e}"))?;
+    let workout: Workout =
+        serde_json::from_value(workout.clone()).map_err(|e| format!("JSON invalide : {e}"))?;
     if workout.name.trim().is_empty() {
         return Err("La séance doit avoir un nom.".to_string());
     }
@@ -105,14 +106,20 @@ pub fn prepare(workout: &Value, athlete: &Athlete, sport: Sport) -> Result<Prepa
     if let Some(obj) = value.as_object_mut() {
         match distance_km {
             Some(km) => {
-                obj.insert("estimated_distance_km".to_string(), serde_json::json!((km * 10.0).round() / 10.0));
+                obj.insert(
+                    "estimated_distance_km".to_string(),
+                    serde_json::json!((km * 10.0).round() / 10.0),
+                );
             }
             None => {
                 obj.remove("estimated_distance_km");
             }
         }
     }
-    Ok(Prepared { name: workout.name, steps_json: value.to_string() })
+    Ok(Prepared {
+        name: workout.name,
+        steps_json: value.to_string(),
+    })
 }
 
 pub async fn insert(
@@ -181,7 +188,11 @@ pub async fn get(pool: &SqlitePool, id: i64) -> anyhow::Result<Option<Planned>> 
 }
 
 /// Planned sessions with `from <= date < to` (end exclusive), oldest first.
-pub async fn list_between(pool: &SqlitePool, from: NaiveDate, to: NaiveDate) -> anyhow::Result<Vec<Planned>> {
+pub async fn list_between(
+    pool: &SqlitePool,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> anyhow::Result<Vec<Planned>> {
     Ok(sqlx::query_as(
         "SELECT id, planned_date, name, steps_json, notes, workout_id, source, sport FROM planned_workouts \
          WHERE planned_date >= ? AND planned_date < ? ORDER BY planned_date, id",
@@ -198,13 +209,21 @@ mod tests {
     use serde_json::json;
 
     async fn test_pool() -> SqlitePool {
-        let pool = sqlx::sqlite::SqlitePoolOptions::new().connect("sqlite::memory:").await.unwrap();
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
         sqlx::migrate!("./migrations").run(&pool).await.unwrap();
         pool
     }
 
     fn athlete() -> Athlete {
-        Athlete { ftp_watts: 205.0, hr_rest: 53.0, hr_max: 192.0, run_threshold_pace_s: 0.0 }
+        Athlete {
+            ftp_watts: 205.0,
+            hr_rest: 53.0,
+            hr_max: 192.0,
+            run_threshold_pace_s: 0.0,
+        }
     }
 
     fn sample() -> Value {
@@ -237,9 +256,28 @@ mod tests {
         assert_eq!(p.name, "Seuil 2x10");
         assert!(v["estimated_distance_km"].as_f64().unwrap() > 0.0);
 
-        assert!(prepare(&json!({"name": "", "steps": []}), &athlete(), Sport::Cycling).is_err());
-        assert!(prepare(&json!({"name": "x", "steps": []}), &athlete(), Sport::Cycling).unwrap_err().contains("au moins une étape"));
-        assert!(prepare(&json!({"nope": 1}), &athlete(), Sport::Cycling).unwrap_err().contains("JSON invalide"));
+        assert!(
+            prepare(
+                &json!({"name": "", "steps": []}),
+                &athlete(),
+                Sport::Cycling
+            )
+            .is_err()
+        );
+        assert!(
+            prepare(
+                &json!({"name": "x", "steps": []}),
+                &athlete(),
+                Sport::Cycling
+            )
+            .unwrap_err()
+            .contains("au moins une étape")
+        );
+        assert!(
+            prepare(&json!({"nope": 1}), &athlete(), Sport::Cycling)
+                .unwrap_err()
+                .contains("JSON invalide")
+        );
     }
 
     #[tokio::test]
@@ -254,26 +292,67 @@ mod tests {
             .unwrap()
             .last_insert_rowid();
         let day = parse_date("2026-10-12").unwrap();
-        let id = insert(&pool, day, &prepared, Some("  jambes lourdes ? "), Some(tpl), "manual", Sport::Cycling).await.unwrap();
+        let id = insert(
+            &pool,
+            day,
+            &prepared,
+            Some("  jambes lourdes ? "),
+            Some(tpl),
+            "manual",
+            Sport::Cycling,
+        )
+        .await
+        .unwrap();
         // A second, template-less session on the same day is fine.
-        insert(&pool, day, &prepared, None, None, "api", Sport::Running).await.unwrap();
+        insert(&pool, day, &prepared, None, None, "api", Sport::Running)
+            .await
+            .unwrap();
 
         // Editing / deleting the template leaves the planned copy alone.
-        sqlx::query("UPDATE workouts SET name = 'renamed', steps_json = '{}' WHERE id = ?").bind(tpl).execute(&pool).await.unwrap();
-        sqlx::query("DELETE FROM workouts WHERE id = ?").bind(tpl).execute(&pool).await.unwrap();
+        sqlx::query("UPDATE workouts SET name = 'renamed', steps_json = '{}' WHERE id = ?")
+            .bind(tpl)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM workouts WHERE id = ?")
+            .bind(tpl)
+            .execute(&pool)
+            .await
+            .unwrap();
 
         let planned = get(&pool, id).await.unwrap().unwrap();
         assert_eq!(planned.name, "Seuil 2x10");
-        assert_eq!(planned.workout_id, None, "link cleared when the template is deleted");
+        assert_eq!(
+            planned.workout_id, None,
+            "link cleared when the template is deleted"
+        );
         assert_eq!(planned.notes.as_deref(), Some("jambes lourdes ?"));
         assert!(planned.steps_json.contains("interval"));
 
-        let in_window = list_between(&pool, parse_date("2026-10-12").unwrap(), parse_date("2026-10-13").unwrap()).await.unwrap();
+        let in_window = list_between(
+            &pool,
+            parse_date("2026-10-12").unwrap(),
+            parse_date("2026-10-13").unwrap(),
+        )
+        .await
+        .unwrap();
         assert_eq!(in_window.len(), 2);
-        let outside = list_between(&pool, parse_date("2026-10-13").unwrap(), parse_date("2026-10-20").unwrap()).await.unwrap();
+        let outside = list_between(
+            &pool,
+            parse_date("2026-10-13").unwrap(),
+            parse_date("2026-10-20").unwrap(),
+        )
+        .await
+        .unwrap();
         assert!(outside.is_empty());
 
-        assert_eq!(in_window.iter().map(|p| p.sport.as_str()).collect::<Vec<_>>(), vec!["cycling", "running"]);
+        assert_eq!(
+            in_window
+                .iter()
+                .map(|p| p.sport.as_str())
+                .collect::<Vec<_>>(),
+            vec!["cycling", "running"]
+        );
 
         assert!(delete(&pool, id).await.unwrap());
         assert!(!delete(&pool, id).await.unwrap());

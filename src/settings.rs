@@ -9,6 +9,11 @@ pub struct Settings {
     pub strava_client_id: String,
     pub strava_client_secret: String,
     pub anthropic_api_key: String,
+    pub openai_api_key: String,
+    /// `anthropic` or `openai`. Bilans and digests call only this provider.
+    pub llm_provider: String,
+    /// Responses API model id, used when `llm_provider` is `openai`.
+    pub openai_model: String,
     pub athlete_profile: String,
     pub bilan_system_prompt: String,
     pub digest_system_prompt: String,
@@ -20,18 +25,23 @@ pub struct Settings {
 }
 
 impl Settings {
-    /// False when no Anthropic key is configured (blank or whitespace) — the
-    /// UI then disables the LLM actions and offers the downloadable report.
+    /// False when the selected provider has no key — the UI then offers the
+    /// downloadable report instead of calling the API.
     pub fn has_llm_key(&self) -> bool {
-        !self.anthropic_api_key.trim().is_empty()
+        let key = if self.llm_provider == "openai" {
+            &self.openai_api_key
+        } else {
+            &self.anthropic_api_key
+        };
+        !key.trim().is_empty()
     }
 }
 
 pub async fn fetch(pool: &SqlitePool) -> anyhow::Result<Settings> {
     Ok(sqlx::query_as(
-        "SELECT strava_client_id, strava_client_secret, anthropic_api_key, athlete_profile, \
-         bilan_system_prompt, digest_system_prompt, theme_color, theme_mode, garmin_api_key, \
-         sync_source FROM settings WHERE id = 1",
+        "SELECT strava_client_id, strava_client_secret, anthropic_api_key, openai_api_key, \
+         llm_provider, openai_model, athlete_profile, bilan_system_prompt, digest_system_prompt, \
+         theme_color, theme_mode, garmin_api_key, sync_source FROM settings WHERE id = 1",
     )
     .fetch_one(pool)
     .await?)

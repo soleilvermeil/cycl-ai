@@ -26,9 +26,15 @@ fn render(latlng: &[[f64; 2]]) -> Option<String> {
         return None;
     }
     let lat_min = latlng.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min);
-    let lat_max = latlng.iter().map(|p| p[0]).fold(f64::NEG_INFINITY, f64::max);
+    let lat_max = latlng
+        .iter()
+        .map(|p| p[0])
+        .fold(f64::NEG_INFINITY, f64::max);
     let lng_min = latlng.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
-    let lng_max = latlng.iter().map(|p| p[1]).fold(f64::NEG_INFINITY, f64::max);
+    let lng_max = latlng
+        .iter()
+        .map(|p| p[1])
+        .fold(f64::NEG_INFINITY, f64::max);
 
     // Longitude degrees compress towards the poles; correct so the shape
     // isn't stretched east-west.

@@ -65,7 +65,10 @@ pub fn parse_gpx(bytes: &[u8]) -> anyhow::Result<RouteProfile> {
             .map(|p| ([p.point().y(), p.point().x()], p.elevation))
             .collect();
     }
-    anyhow::ensure!(points.len() >= 2, "le fichier GPX contient moins de 2 points de trace ou d'itinéraire");
+    anyhow::ensure!(
+        points.len() >= 2,
+        "le fichier GPX contient moins de 2 points de trace ou d'itinéraire"
+    );
 
     let name = gpx
         .metadata
@@ -135,7 +138,11 @@ pub fn build_profile(points: &[([f64; 2], Option<f64>)]) -> anyhow::Result<Route
             seg += 1;
         }
         let span = cum[seg + 1] - cum[seg];
-        let t = if span > 0.0 { ((d - cum[seg]) / span).clamp(0.0, 1.0) } else { 0.0 };
+        let t = if span > 0.0 {
+            ((d - cum[seg]) / span).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         latlng.push([
             ll[seg][0] + (ll[seg + 1][0] - ll[seg][0]) * t,
             ll[seg][1] + (ll[seg + 1][1] - ll[seg][1]) * t,
@@ -263,8 +270,17 @@ mod tests {
             p.1 = p.1.map(|e| e + if i % 2 == 0 { 2.0 } else { -2.0 });
         }
         let p = build_profile(&pts).unwrap();
-        assert!(p.max_grade_pct < 1.5 && p.min_grade_pct > -1.5, "{} {}", p.min_grade_pct, p.max_grade_pct);
-        assert!(p.ascent_m < 60.0, "smoothing should keep D+ small, got {}", p.ascent_m);
+        assert!(
+            p.max_grade_pct < 1.5 && p.min_grade_pct > -1.5,
+            "{} {}",
+            p.min_grade_pct,
+            p.max_grade_pct
+        );
+        assert!(
+            p.ascent_m < 60.0,
+            "smoothing should keep D+ small, got {}",
+            p.ascent_m
+        );
     }
 
     #[test]

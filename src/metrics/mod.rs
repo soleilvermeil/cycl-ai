@@ -40,13 +40,23 @@ pub fn load_tss_sql(coef_param: usize) -> String {
 }
 
 pub async fn get_hr_config(pool: &SqlitePool) -> anyhow::Result<HrConfig> {
-    let (hr_max, hr_rest, lthr, tss_coef): (i64, i64, i64, f64) =
-        sqlx::query_as("SELECT hr_max, hr_rest, lthr, hr_tss_coef FROM athlete_config WHERE id = 1")
-            .fetch_one(pool)
-            .await?;
+    let (hr_max, hr_rest, lthr, tss_coef): (i64, i64, i64, f64) = sqlx::query_as(
+        "SELECT hr_max, hr_rest, lthr, hr_tss_coef FROM athlete_config WHERE id = 1",
+    )
+    .fetch_one(pool)
+    .await?;
     let (rest, max) = (hr_rest as f64, hr_max as f64);
-    let lthr = if lthr > 0 { lthr as f64 } else { rest + 0.85 * (max - rest) };
-    Ok(HrConfig { rest, max, lthr, tss_coef })
+    let lthr = if lthr > 0 {
+        lthr as f64
+    } else {
+        rest + 0.85 * (max - rest)
+    };
+    Ok(HrConfig {
+        rest,
+        max,
+        lthr,
+        tss_coef,
+    })
 }
 
 /// Banister TRIMP per minute at a given heart rate (male coefficients, the
@@ -82,8 +92,9 @@ pub fn hr_tss(heartrate: &[f64], time: &[f64], cfg: &HrConfig) -> Option<f64> {
 /// hrTSS from the average HR only (activities without a stream).
 fn hr_tss_from_average(avg_hr: f64, duration_s: i64, cfg: &HrConfig) -> Option<f64> {
     let one_hour_at_threshold = trimp_per_min(cfg.lthr, cfg) * 60.0;
-    (one_hour_at_threshold > 0.0)
-        .then(|| trimp_per_min(avg_hr, cfg) * duration_s as f64 / 60.0 / one_hour_at_threshold * 100.0)
+    (one_hour_at_threshold > 0.0).then(|| {
+        trimp_per_min(avg_hr, cfg) * duration_s as f64 / 60.0 / one_hour_at_threshold * 100.0
+    })
 }
 
 /// Runs all deterministic post-sync calculations: TSS/IF, power zones,
@@ -156,7 +167,10 @@ pub fn days_of_rest_to_reach(mut ctl: f64, mut atl: f64, target: f64) -> Option<
 /// Rest days until TSB leaves its current band for the next one up; `None`
 /// in the top band (nothing above it) or when it can't be reached.
 fn rest_days_to_next_band(ctl: f64, atl: f64, tsb: f64) -> Option<i64> {
-    let next_upper = TSB_BAND_UPPER_BOUNDS.iter().copied().find(|upper| tsb < *upper)?;
+    let next_upper = TSB_BAND_UPPER_BOUNDS
+        .iter()
+        .copied()
+        .find(|upper| tsb < *upper)?;
     days_of_rest_to_reach(ctl, atl, next_upper)
 }
 
@@ -290,11 +304,17 @@ async fn update_run_hr_tss(pool: &SqlitePool, only: Option<&[i64]>) -> anyhow::R
             .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
             .and_then(|v| {
                 let series = |key: &str| -> Option<Vec<f64>> {
-                    v.get(key)?.get("data")?.as_array()?.iter().map(|x| x.as_f64()).collect()
+                    v.get(key)?
+                        .get("data")?
+                        .as_array()?
+                        .iter()
+                        .map(|x| x.as_f64())
+                        .collect()
                 };
                 hr_tss(&series("heartrate")?, &series("time")?, &cfg)
             });
-        let tss = from_stream.or_else(|| avg_hr.and_then(|hr| hr_tss_from_average(hr, duration_s, &cfg)));
+        let tss =
+            from_stream.or_else(|| avg_hr.and_then(|hr| hr_tss_from_average(hr, duration_s, &cfg)));
         sqlx::query("UPDATE activities SET tss = ?, tss_source = ? WHERE id = ?")
             .bind(tss)
             .bind(tss.map(|_| "hr"))
@@ -346,7 +366,11 @@ pub fn power_zone(watts: f64, ftp: f64) -> usize {
     }
 }
 
-async fn recompute_all_zones(pool: &SqlitePool, ftp: f64, only: Option<&[i64]>) -> anyhow::Result<()> {
+async fn recompute_all_zones(
+    pool: &SqlitePool,
+    ftp: f64,
+    only: Option<&[i64]>,
+) -> anyhow::Result<()> {
     let ids: Vec<(i64,)> = sqlx::query_as(
         "SELECT s.activity_id FROM activity_streams s JOIN activities a ON a.id = s.activity_id \n         WHERE a.sport_type NOT IN ('Run', 'TrailRun')",
     )
@@ -375,8 +399,14 @@ async fn compute_zones_for_activity(
         return Ok(());
     };
     let parsed: serde_json::Value = serde_json::from_str(&streams_json)?;
-    let watts = parsed.get("watts").and_then(|s| s.get("data")).and_then(|d| d.as_array());
-    let time = parsed.get("time").and_then(|s| s.get("data")).and_then(|d| d.as_array());
+    let watts = parsed
+        .get("watts")
+        .and_then(|s| s.get("data"))
+        .and_then(|d| d.as_array());
+    let time = parsed
+        .get("time")
+        .and_then(|s| s.get("data"))
+        .and_then(|d| d.as_array());
     let (Some(watts), Some(time)) = (watts, time) else {
         return Ok(());
     };
@@ -427,7 +457,9 @@ pub async fn recompute_daily_load(pool: &SqlitePool) -> anyhow::Result<()> {
     // the first activity, and a commit (fsync) per row is what made the sync
     // crawl on the NAS's disk.
     let mut tx = pool.begin().await?;
-    sqlx::query("DELETE FROM daily_load").execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM daily_load")
+        .execute(&mut *tx)
+        .await?;
 
     // hrTSS (runs) enters the load weighted by the configured coefficient.
     let coef = get_hr_config(pool).await?.tss_coef;
@@ -444,7 +476,8 @@ pub async fn recompute_daily_load(pool: &SqlitePool) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let mut tss_by_day: std::collections::HashMap<NaiveDate, f64> = std::collections::HashMap::new();
+    let mut tss_by_day: std::collections::HashMap<NaiveDate, f64> =
+        std::collections::HashMap::new();
     for (day_str, tss) in &rows {
         if let Ok(day) = NaiveDate::parse_from_str(day_str, "%Y-%m-%d") {
             tss_by_day.insert(day, *tss);
@@ -516,15 +549,13 @@ pub async fn extend_daily_load_to_today(pool: &SqlitePool) -> anyhow::Result<()>
         ctl += -ctl / 42.0;
         atl += -atl / 7.0;
         let tsb = ctl - atl;
-        sqlx::query(
-            "INSERT INTO daily_load (date, tss, ctl, atl, tsb) VALUES (?, 0.0, ?, ?, ?)",
-        )
-        .bind(day.to_string())
-        .bind(ctl)
-        .bind(atl)
-        .bind(tsb)
-        .execute(&mut *tx)
-        .await?;
+        sqlx::query("INSERT INTO daily_load (date, tss, ctl, atl, tsb) VALUES (?, 0.0, ?, ?, ?)")
+            .bind(day.to_string())
+            .bind(ctl)
+            .bind(atl)
+            .bind(tsb)
+            .execute(&mut *tx)
+            .await?;
         day += chrono::Duration::days(1);
     }
     tx.commit().await?;
@@ -548,10 +579,12 @@ mod tests {
     #[tokio::test]
     async fn tss_if_uses_current_ftp() {
         let pool = test_pool().await;
-        sqlx::query("INSERT INTO athlete_config (id, ftp_watts, hr_max, hr_rest) VALUES (1, 200, 190, 50)")
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO athlete_config (id, ftp_watts, hr_max, hr_rest) VALUES (1, 200, 190, 50)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         sqlx::query(
             "INSERT INTO activities (id, started_at, duration_s, distance_m, elevation_gain_m, normalized_power_w) \
              VALUES (1, '2026-08-01T10:00:00Z', 3600, 30000, 300, 200)",
@@ -576,10 +609,12 @@ mod tests {
     #[tokio::test]
     async fn runs_contribute_no_tss_zones_or_load_and_do_not_break_the_pipeline() {
         let pool = test_pool().await;
-        sqlx::query("INSERT INTO athlete_config (id, ftp_watts, hr_max, hr_rest) VALUES (1, 200, 190, 50)")
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO athlete_config (id, ftp_watts, hr_max, hr_rest) VALUES (1, 200, 190, 50)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         // A run carrying (foot-pod) power must still be ignored by TSS/zones.
         sqlx::query(
             "INSERT INTO activities (id, sport_type, started_at, duration_s, distance_m, elevation_gain_m, normalized_power_w)              VALUES (1, 'Run', '2026-08-01T10:00:00Z', 3000, 10000, 50, 250)",
@@ -614,7 +649,12 @@ mod tests {
 
     #[test]
     fn hr_tss_is_100_for_one_hour_at_threshold_and_scales_with_intensity() {
-        let cfg = HrConfig { rest: 50.0, max: 190.0, lthr: 170.0, tss_coef: 1.0 };
+        let cfg = HrConfig {
+            rest: 50.0,
+            max: 190.0,
+            lthr: 170.0,
+            tss_coef: 1.0,
+        };
         let time: Vec<f64> = (0..=3600).map(|t| t as f64).collect();
         let at_threshold = vec![170.0; time.len()];
         let tss = hr_tss(&at_threshold, &time, &cfg).unwrap();
@@ -631,7 +671,12 @@ mod tests {
 
     #[test]
     fn hr_tss_ignores_long_pauses_in_the_stream() {
-        let cfg = HrConfig { rest: 50.0, max: 190.0, lthr: 170.0, tss_coef: 1.0 };
+        let cfg = HrConfig {
+            rest: 50.0,
+            max: 190.0,
+            lthr: 170.0,
+            tss_coef: 1.0,
+        };
         // 10 min at threshold, a 1 h auto-pause gap, 10 more minutes.
         let mut time: Vec<f64> = (0..=600).map(|t| t as f64).collect();
         time.extend((0..=600).map(|t| 4200.0 + t as f64));
@@ -664,7 +709,8 @@ mod tests {
         .await
         .unwrap();
         let time: Vec<f64> = (0..=3600).map(|t| t as f64).collect();
-        let streams = serde_json::json!({"time": {"data": time}, "heartrate": {"data": vec![170.0; 3601]}});
+        let streams =
+            serde_json::json!({"time": {"data": time}, "heartrate": {"data": vec![170.0; 3601]}});
         sqlx::query("INSERT INTO activity_streams (activity_id, streams_json) VALUES (2, ?)")
             .bind(streams.to_string())
             .execute(&pool)
@@ -682,20 +728,33 @@ mod tests {
         run(&pool).await.unwrap();
 
         let (ride_tss, ride_src): (f64, String) =
-            sqlx::query_as("SELECT tss, tss_source FROM activities WHERE id = 1").fetch_one(&pool).await.unwrap();
+            sqlx::query_as("SELECT tss, tss_source FROM activities WHERE id = 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         let (run_tss, run_src): (f64, String) =
-            sqlx::query_as("SELECT tss, tss_source FROM activities WHERE id = 2").fetch_one(&pool).await.unwrap();
+            sqlx::query_as("SELECT tss, tss_source FROM activities WHERE id = 2")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         let (no_hr_tss,): (Option<f64>,) =
-            sqlx::query_as("SELECT tss FROM activities WHERE id = 3").fetch_one(&pool).await.unwrap();
+            sqlx::query_as("SELECT tss FROM activities WHERE id = 3")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert!((ride_tss - 100.0).abs() < 1e-6 && ride_src == "power");
-        assert!((run_tss - 100.0).abs() < 0.5 && run_src == "hr", "run tss {run_tss}");
+        assert!(
+            (run_tss - 100.0).abs() < 0.5 && run_src == "hr",
+            "run tss {run_tss}"
+        );
         assert_eq!(no_hr_tss, None);
 
         // Both land in the same day's load: the day's TSS is the sum.
-        let (day_tss,): (f64,) = sqlx::query_as("SELECT tss FROM daily_load WHERE date = '2026-08-01'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let (day_tss,): (f64,) =
+            sqlx::query_as("SELECT tss FROM daily_load WHERE date = '2026-08-01'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert!((day_tss - (ride_tss + run_tss)).abs() < 1e-6);
     }
 
@@ -721,38 +780,57 @@ mod tests {
         .await
         .unwrap();
 
-        sqlx::query("UPDATE athlete_config SET hr_tss_coef = 0.5").execute(&pool).await.unwrap();
+        sqlx::query("UPDATE athlete_config SET hr_tss_coef = 0.5")
+            .execute(&pool)
+            .await
+            .unwrap();
         run(&pool).await.unwrap();
 
-        let (run_tss,): (f64,) = sqlx::query_as("SELECT tss FROM activities WHERE id = 2").fetch_one(&pool).await.unwrap();
-        let (day_tss,): (f64,) = sqlx::query_as("SELECT tss FROM daily_load WHERE date = '2026-08-01'")
+        let (run_tss,): (f64,) = sqlx::query_as("SELECT tss FROM activities WHERE id = 2")
             .fetch_one(&pool)
             .await
             .unwrap();
+        let (day_tss,): (f64,) =
+            sqlx::query_as("SELECT tss FROM daily_load WHERE date = '2026-08-01'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         // Stored hrTSS is raw (~100); the day counts the ride in full (100) + half the run.
         assert!((run_tss - 100.0).abs() < 0.5, "stored hrTSS {run_tss}");
-        assert!((day_tss - (100.0 + run_tss * 0.5)).abs() < 1e-6, "day load {day_tss}");
+        assert!(
+            (day_tss - (100.0 + run_tss * 0.5)).abs() < 1e-6,
+            "day load {day_tss}"
+        );
 
         // 0 = runs don't count towards load at all; the summary follows.
-        sqlx::query("UPDATE athlete_config SET hr_tss_coef = 0").execute(&pool).await.unwrap();
-        run(&pool).await.unwrap();
-        let (day_tss,): (f64,) = sqlx::query_as("SELECT tss FROM daily_load WHERE date = '2026-08-01'")
-            .fetch_one(&pool)
+        sqlx::query("UPDATE athlete_config SET hr_tss_coef = 0")
+            .execute(&pool)
             .await
             .unwrap();
+        run(&pool).await.unwrap();
+        let (day_tss,): (f64,) =
+            sqlx::query_as("SELECT tss FROM daily_load WHERE date = '2026-08-01'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert!((day_tss - 100.0).abs() < 1e-6);
     }
 
     #[tokio::test]
     async fn threshold_hr_defaults_from_hr_reserve_when_unset() {
         let pool = test_pool().await;
-        sqlx::query("INSERT INTO athlete_config (id, ftp_watts, hr_max, hr_rest) VALUES (1, 200, 190, 50)")
+        sqlx::query(
+            "INSERT INTO athlete_config (id, ftp_watts, hr_max, hr_rest) VALUES (1, 200, 190, 50)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let cfg = get_hr_config(&pool).await.unwrap();
+        assert!((cfg.lthr - (50.0 + 0.85 * 140.0)).abs() < 1e-9);
+        sqlx::query("UPDATE athlete_config SET lthr = 167")
             .execute(&pool)
             .await
             .unwrap();
-        let cfg = get_hr_config(&pool).await.unwrap();
-        assert!((cfg.lthr - (50.0 + 0.85 * 140.0)).abs() < 1e-9);
-        sqlx::query("UPDATE athlete_config SET lthr = 167").execute(&pool).await.unwrap();
         assert_eq!(get_hr_config(&pool).await.unwrap().lthr, 167.0);
     }
 
@@ -771,10 +849,12 @@ mod tests {
     #[tokio::test]
     async fn zone_binning_from_streams() {
         let pool = test_pool().await;
-        sqlx::query("INSERT INTO athlete_config (id, ftp_watts, hr_max, hr_rest) VALUES (1, 200, 190, 50)")
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO athlete_config (id, ftp_watts, hr_max, hr_rest) VALUES (1, 200, 190, 50)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         sqlx::query(
             "INSERT INTO activities (id, started_at, duration_s, distance_m, elevation_gain_m) \
              VALUES (1, '2026-08-01T10:00:00Z', 20, 100, 0)",
@@ -807,10 +887,12 @@ mod tests {
     #[tokio::test]
     async fn ctl_atl_ewma_recursion() {
         let pool = test_pool().await;
-        sqlx::query("INSERT INTO athlete_config (id, ftp_watts, hr_max, hr_rest) VALUES (1, 200, 190, 50)")
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO athlete_config (id, ftp_watts, hr_max, hr_rest) VALUES (1, 200, 190, 50)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         // A single 100-TSS day; everything else in [first_day, today] is 0.
         sqlx::query(
             "INSERT INTO activities (id, started_at, duration_s, distance_m, elevation_gain_m, normalized_power_w) \
@@ -822,12 +904,11 @@ mod tests {
 
         run(&pool).await.unwrap();
 
-        let (ctl, atl, tsb): (f64, f64, f64) = sqlx::query_as(
-            "SELECT ctl, atl, tsb FROM daily_load WHERE date = '2026-08-01'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let (ctl, atl, tsb): (f64, f64, f64) =
+            sqlx::query_as("SELECT ctl, atl, tsb FROM daily_load WHERE date = '2026-08-01'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
 
         // First day, starting from ctl=atl=0: ctl = 0 + (100-0)/42, atl = 0 + (100-0)/7
         assert!((ctl - 100.0 / 42.0).abs() < 1e-9);
@@ -842,11 +923,13 @@ mod tests {
         let today = chrono::Utc::now().date_naive();
         let last_synced_day = today - chrono::Duration::days(3);
 
-        sqlx::query("INSERT INTO daily_load (date, tss, ctl, atl, tsb) VALUES (?, 100.0, 50.0, 30.0, 20.0)")
-            .bind(last_synced_day.to_string())
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO daily_load (date, tss, ctl, atl, tsb) VALUES (?, 100.0, 50.0, 30.0, 20.0)",
+        )
+        .bind(last_synced_day.to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
 
         extend_daily_load_to_today(&pool).await.unwrap();
 
@@ -854,7 +937,10 @@ mod tests {
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(count, 4, "last_synced_day plus 3 topped-up days through today");
+        assert_eq!(
+            count, 4,
+            "last_synced_day plus 3 topped-up days through today"
+        );
 
         // Original row untouched.
         let (tss, ctl, atl): (f64, f64, f64) =
@@ -870,10 +956,12 @@ mod tests {
         // Rest decay: TSS=0 for every topped-up day, ATL (7-day) decaying
         // faster than CTL (42-day).
         let (last_date, last_tss, last_ctl, last_atl, last_tsb): (String, f64, f64, f64, f64) =
-            sqlx::query_as("SELECT date, tss, ctl, atl, tsb FROM daily_load ORDER BY date DESC LIMIT 1")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+            sqlx::query_as(
+                "SELECT date, tss, ctl, atl, tsb FROM daily_load ORDER BY date DESC LIMIT 1",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(last_date, today.to_string());
         assert_eq!(last_tss, 0.0);
         assert!(last_ctl < 50.0 && last_ctl > 0.0);
@@ -885,11 +973,13 @@ mod tests {
     async fn extend_top_up_is_noop_when_already_current() {
         let pool = test_pool().await;
         let today = chrono::Utc::now().date_naive();
-        sqlx::query("INSERT INTO daily_load (date, tss, ctl, atl, tsb) VALUES (?, 0.0, 10.0, 5.0, 5.0)")
-            .bind(today.to_string())
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO daily_load (date, tss, ctl, atl, tsb) VALUES (?, 0.0, 10.0, 5.0, 5.0)",
+        )
+        .bind(today.to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
 
         extend_daily_load_to_today(&pool).await.unwrap();
 
@@ -907,7 +997,10 @@ mod tests {
         // ATL (7-day) decays faster than CTL (42-day) under pure rest, so
         // TSB rises quickly at first — a couple of days to cross into Frais.
         let days = days_of_rest_to_reach(28.9, 37.4, 0.0).expect("reachable within cap");
-        assert!((1..=5).contains(&days), "expected a small number of days, got {days}");
+        assert!(
+            (1..=5).contains(&days),
+            "expected a small number of days, got {days}"
+        );
     }
 
     #[test]
@@ -925,10 +1018,12 @@ mod tests {
     #[tokio::test]
     async fn dashboard_summary_is_computed_once_then_read_from_the_cache_row() {
         let pool = test_pool().await;
-        sqlx::query("INSERT INTO athlete_config (id, ftp_watts, hr_max, hr_rest) VALUES (1, 200, 190, 50)")
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO athlete_config (id, ftp_watts, hr_max, hr_rest) VALUES (1, 200, 190, 50)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         let yesterday = chrono::Utc::now().date_naive() - chrono::Duration::days(1);
         sqlx::query(
             "INSERT INTO activities (id, started_at, duration_s, distance_m, elevation_gain_m, normalized_power_w, zone2_s) \

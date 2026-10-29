@@ -41,7 +41,13 @@ fn try_start() -> bool {
     if p.running {
         return false;
     }
-    *p = Progress { running: true, step: "Démarrage".into(), done: 0, total: 0, error: None };
+    *p = Progress {
+        running: true,
+        step: "Démarrage".into(),
+        done: 0,
+        total: 0,
+        error: None,
+    };
     true
 }
 
@@ -49,7 +55,11 @@ fn finish(result: &anyhow::Result<()>) {
     let mut p = PROGRESS.lock().unwrap();
     p.running = false;
     p.error = result.as_ref().err().map(|e| format!("{e:#}"));
-    p.step = if p.error.is_some() { "Échec".into() } else { "Terminé".into() };
+    p.step = if p.error.is_some() {
+        "Échec".into()
+    } else {
+        "Terminé".into()
+    };
 }
 
 /// Runs a sync in the background for the web UI; returns immediately.
@@ -99,14 +109,19 @@ async fn run_inner(pool: &SqlitePool, full: bool) -> anyhow::Result<()> {
         return run_garmin(pool, &settings.garmin_api_key, full).await;
     }
 
-    let state: Option<SyncState> = sqlx::query_as(
-        "SELECT last_sync_epoch, strava_refresh_token FROM sync_state WHERE id = 1",
-    )
-    .fetch_optional(pool)
-    .await?;
+    let state: Option<SyncState> =
+        sqlx::query_as("SELECT last_sync_epoch, strava_refresh_token FROM sync_state WHERE id = 1")
+            .fetch_optional(pool)
+            .await?;
 
-    let last_sync_epoch = if full { 0 } else { state.as_ref().map(|s| s.last_sync_epoch).unwrap_or(0) };
-    let refresh_token = state.and_then(|s| s.strava_refresh_token).unwrap_or_default();
+    let last_sync_epoch = if full {
+        0
+    } else {
+        state.as_ref().map(|s| s.last_sync_epoch).unwrap_or(0)
+    };
+    let refresh_token = state
+        .and_then(|s| s.strava_refresh_token)
+        .unwrap_or_default();
 
     set_step("Authentification Strava", 0, 0);
     let client = StravaClient::authenticate(
@@ -128,7 +143,10 @@ async fn run_inner(pool: &SqlitePool, full: bool) -> anyhow::Result<()> {
         .into_iter()
         .filter(|a| crate::metrics::is_supported_sport(&a.sport_type))
         .collect();
-    tracing::info!(count = activities.len(), "road rides and runs after filtering");
+    tracing::info!(
+        count = activities.len(),
+        "road rides and runs after filtering"
+    );
 
     let total = activities.len();
     let mut imported_ids: Vec<i64> = Vec::new();
@@ -203,13 +221,16 @@ async fn run_inner(pool: &SqlitePool, full: bool) -> anyhow::Result<()> {
         .bind(streams_json)
         .execute(pool)
         .await?;
-        let route_points = crate::route_thumb::compute_points(&streams_json_for_points).unwrap_or_default();
-        sqlx::query("UPDATE activities SET route_thumb_svg = ?, route_points_json = ? WHERE id = ?")
-            .bind(route_thumb_svg)
-            .bind(route_points)
-            .bind(activity.id)
-            .execute(pool)
-            .await?;
+        let route_points =
+            crate::route_thumb::compute_points(&streams_json_for_points).unwrap_or_default();
+        sqlx::query(
+            "UPDATE activities SET route_thumb_svg = ?, route_points_json = ? WHERE id = ?",
+        )
+        .bind(route_thumb_svg)
+        .bind(route_points)
+        .bind(activity.id)
+        .execute(pool)
+        .await?;
         crate::bests::store(pool, activity.id, !is_ride, &streams).await?;
 
         set_step(format!("{label} : tours"), i, total);
@@ -219,7 +240,9 @@ async fn run_inner(pool: &SqlitePool, full: bool) -> anyhow::Result<()> {
             .execute(pool)
             .await?;
         for lap in &laps {
-            let avg_power = lap.average_watts.filter(|_| is_ride && lap.device_watts.unwrap_or(false));
+            let avg_power = lap
+                .average_watts
+                .filter(|_| is_ride && lap.device_watts.unwrap_or(false));
             sqlx::query(
                 r#"
                 INSERT INTO laps (activity_id, lap_index, elapsed_time_s, distance_m, avg_power_w, avg_hr, max_hr)
@@ -261,7 +284,11 @@ async fn run_inner(pool: &SqlitePool, full: bool) -> anyhow::Result<()> {
     // The segment replay re-parses every stored ride, so it only runs when
     // something new was imported (`import-segments` runs it itself too).
     if imported_ids.is_empty() {
-        set_step("Détection des segments (rien de nouveau, ignorée)", total, total);
+        set_step(
+            "Détection des segments (rien de nouveau, ignorée)",
+            total,
+            total,
+        );
     } else {
         set_step("Détection des segments", total, total);
         crate::segments::run(pool).await?;
@@ -293,7 +320,10 @@ async fn run_garmin(pool: &SqlitePool, api_key: &str, full: bool) -> anyhow::Res
     set_step("Récupération de la liste des activités Garmin", 0, 0);
     let after = (last_sync_epoch > 0).then_some(last_sync_epoch);
     let activities = client.list_supported(after).await?;
-    tracing::info!(count = activities.len(), "supported activities fetched from Garmin");
+    tracing::info!(
+        count = activities.len(),
+        "supported activities fetched from Garmin"
+    );
 
     let total = activities.len();
     let mut imported_ids = Vec::new();
@@ -325,7 +355,11 @@ async fn run_garmin(pool: &SqlitePool, api_key: &str, full: bool) -> anyhow::Res
         let mut parsed = match crate::importer::parse_fit(&fit) {
             Ok(parsed) => parsed,
             Err(err) => {
-                tracing::warn!(garmin_id = activity.id, ?err, "FIT parse failed, activity skipped");
+                tracing::warn!(
+                    garmin_id = activity.id,
+                    ?err,
+                    "FIT parse failed, activity skipped"
+                );
                 continue;
             }
         };
@@ -399,12 +433,14 @@ async fn run_garmin(pool: &SqlitePool, api_key: &str, full: bool) -> anyhow::Res
         .bind(&streams_json)
         .execute(pool)
         .await?;
-        sqlx::query("UPDATE activities SET route_thumb_svg = ?, route_points_json = ? WHERE id = ?")
-            .bind(route_thumb_svg)
-            .bind(route_points)
-            .bind(id)
-            .execute(pool)
-            .await?;
+        sqlx::query(
+            "UPDATE activities SET route_thumb_svg = ?, route_points_json = ? WHERE id = ?",
+        )
+        .bind(route_thumb_svg)
+        .bind(route_points)
+        .bind(id)
+        .execute(pool)
+        .await?;
         crate::bests::store(pool, id, !is_ride, &parsed.streams_json).await?;
 
         sqlx::query("DELETE FROM laps WHERE activity_id = ?")
@@ -445,7 +481,11 @@ async fn run_garmin(pool: &SqlitePool, api_key: &str, full: bool) -> anyhow::Res
     set_step("Calcul des métriques (TSS, CTL/ATL, zones)", total, total);
     crate::metrics::run_incremental(pool, &imported_ids).await?;
     if imported_ids.is_empty() {
-        set_step("Détection des segments (rien de nouveau, ignorée)", total, total);
+        set_step(
+            "Détection des segments (rien de nouveau, ignorée)",
+            total,
+            total,
+        );
     } else {
         set_step("Détection des segments", total, total);
         crate::segments::run(pool).await?;

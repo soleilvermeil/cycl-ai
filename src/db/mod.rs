@@ -31,11 +31,15 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
 /// replace it with a single row for the initial migration; the schema is
 /// already in place. Fresh databases and already-adopted ones are untouched.
 /// Safe to delete once no pre-squash database remains.
-async fn adopt_squashed_history(pool: &SqlitePool, migrator: &sqlx::migrate::Migrator) -> anyhow::Result<()> {
-    let has_table: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations'")
-            .fetch_one(pool)
-            .await?;
+async fn adopt_squashed_history(
+    pool: &SqlitePool,
+    migrator: &sqlx::migrate::Migrator,
+) -> anyhow::Result<()> {
+    let has_table: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations'",
+    )
+    .fetch_one(pool)
+    .await?;
     if has_table == 0 {
         return Ok(());
     }
@@ -58,7 +62,9 @@ async fn adopt_squashed_history(pool: &SqlitePool, migrator: &sqlx::migrate::Mig
         .find(|m| m.version == INITIAL_VERSION)
         .ok_or_else(|| anyhow::anyhow!("no embedded migration found"))?;
     let mut tx = pool.begin().await?;
-    sqlx::query("DELETE FROM _sqlx_migrations").execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM _sqlx_migrations")
+        .execute(&mut *tx)
+        .await?;
     sqlx::query(
         "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) \
          VALUES (?, ?, 1, ?, 0)",
@@ -79,18 +85,54 @@ mod tests {
 
     #[tokio::test]
     async fn pre_squash_database_is_adopted_and_fresh_one_is_untouched() {
-        let pool = SqlitePoolOptions::new().connect("sqlite::memory:").await.unwrap();
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
         migrate(&pool).await.unwrap();
 
         // Simulate the old history: 20 rows, wrong checksums, last one present,
         // and none of the post-squash schema (api keys, Garmin source).
-        sqlx::query("DROP TABLE api_keys").execute(&pool).await.unwrap();
-        sqlx::query("DROP INDEX IF EXISTS activities_source_external").execute(&pool).await.unwrap();
-        sqlx::query("ALTER TABLE activities DROP COLUMN external_id").execute(&pool).await.unwrap();
-        sqlx::query("ALTER TABLE activities DROP COLUMN source").execute(&pool).await.unwrap();
-        sqlx::query("ALTER TABLE settings DROP COLUMN sync_source").execute(&pool).await.unwrap();
-        sqlx::query("ALTER TABLE settings DROP COLUMN garmin_api_key").execute(&pool).await.unwrap();
-        sqlx::query("DELETE FROM _sqlx_migrations").execute(&pool).await.unwrap();
+        sqlx::query("DROP TABLE api_keys")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DROP INDEX IF EXISTS activities_source_external")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("ALTER TABLE activities DROP COLUMN external_id")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("ALTER TABLE activities DROP COLUMN source")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("ALTER TABLE settings DROP COLUMN sync_source")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("ALTER TABLE settings DROP COLUMN garmin_api_key")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("ALTER TABLE settings DROP COLUMN openai_api_key")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("ALTER TABLE settings DROP COLUMN llm_provider")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("ALTER TABLE settings DROP COLUMN openai_model")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM _sqlx_migrations")
+            .execute(&pool)
+            .await
+            .unwrap();
         for i in 0..19i64 {
             sqlx::query(
                 "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (?, 'old', 1, x'00', 0)",
@@ -110,17 +152,29 @@ mod tests {
         assert!(sqlx::migrate!("./migrations").run(&pool).await.is_err());
 
         migrate(&pool).await.unwrap();
-        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations").fetch_one(&pool).await.unwrap();
-        assert_eq!(n, 3); // initial (adopted) + api_keys + garmin_sync
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(n, 4); // initial (adopted) + api_keys + garmin_sync + openai
         migrate(&pool).await.unwrap(); // idempotent
     }
 
     #[tokio::test]
     async fn partially_migrated_old_database_is_rejected() {
-        let pool = SqlitePoolOptions::new().connect("sqlite::memory:").await.unwrap();
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
         migrate(&pool).await.unwrap();
-        sqlx::query("DELETE FROM _sqlx_migrations WHERE version > 20260819000000").execute(&pool).await.unwrap();
-        sqlx::query("UPDATE _sqlx_migrations SET version = 20260901000000").execute(&pool).await.unwrap();
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version > 20260819000000")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE _sqlx_migrations SET version = 20260901000000")
+            .execute(&pool)
+            .await
+            .unwrap();
         assert!(migrate(&pool).await.is_err());
     }
 }
@@ -147,8 +201,9 @@ pub async fn seed_settings(pool: &SqlitePool, config: &Config) -> anyhow::Result
         r#"
         INSERT OR IGNORE INTO settings
             (id, strava_client_id, strava_client_secret, anthropic_api_key, athlete_profile,
-             bilan_system_prompt, digest_system_prompt, garmin_api_key, sync_source)
-        VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
+             bilan_system_prompt, digest_system_prompt, garmin_api_key, sync_source,
+             openai_api_key, llm_provider, openai_model)
+        VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
     )
     .bind(&config.strava_client_id)
@@ -158,11 +213,22 @@ pub async fn seed_settings(pool: &SqlitePool, config: &Config) -> anyhow::Result
     .bind(crate::llm::BILAN_DEFAULT_SYSTEM_PROMPT)
     .bind(crate::digest::DEFAULT_SYSTEM_PROMPT)
     .bind(&config.garmin_api_key)
-    .bind(if config.garmin_api_key.trim().is_empty() || !config.strava_client_id.trim().is_empty() {
-        "strava"
-    } else {
-        "garmin"
-    })
+    .bind(
+        if config.garmin_api_key.trim().is_empty() || !config.strava_client_id.trim().is_empty() {
+            "strava"
+        } else {
+            "garmin"
+        },
+    )
+    .bind(&config.openai_api_key)
+    .bind(
+        if config.openai_api_key.trim().is_empty() || !config.anthropic_api_key.trim().is_empty() {
+            "anthropic"
+        } else {
+            "openai"
+        },
+    )
+    .bind(crate::llm::DEFAULT_OPENAI_MODEL)
     .execute(pool)
     .await?;
 
@@ -172,13 +238,33 @@ pub async fn seed_settings(pool: &SqlitePool, config: &Config) -> anyhow::Result
     // Garmin only when Strava was never configured, so a daily Strava sync
     // is not silently replaced.
     if !config.garmin_api_key.trim().is_empty() {
-        let filled = sqlx::query("UPDATE settings SET garmin_api_key = ? WHERE id = 1 AND garmin_api_key = ''")
-            .bind(config.garmin_api_key.trim())
-            .execute(pool)
-            .await?;
+        let filled = sqlx::query(
+            "UPDATE settings SET garmin_api_key = ? WHERE id = 1 AND garmin_api_key = ''",
+        )
+        .bind(config.garmin_api_key.trim())
+        .execute(pool)
+        .await?;
         if filled.rows_affected() > 0 {
             sqlx::query(
                 "UPDATE settings SET sync_source = 'garmin' WHERE id = 1 AND sync_source = 'strava' AND strava_client_id = ''",
+            )
+            .execute(pool)
+            .await?;
+        }
+    }
+
+    // Same rule as Garmin: fill a blank key from the environment, and switch
+    // the provider only when Anthropic was never configured.
+    if !config.openai_api_key.trim().is_empty() {
+        let filled = sqlx::query(
+            "UPDATE settings SET openai_api_key = ? WHERE id = 1 AND openai_api_key = ''",
+        )
+        .bind(config.openai_api_key.trim())
+        .execute(pool)
+        .await?;
+        if filled.rows_affected() > 0 {
+            sqlx::query(
+                "UPDATE settings SET llm_provider = 'openai' WHERE id = 1 AND llm_provider = 'anthropic' AND anthropic_api_key = ''",
             )
             .execute(pool)
             .await?;

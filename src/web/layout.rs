@@ -12,10 +12,17 @@ struct Theme {
     mode: String,
 }
 
-static THEME: RwLock<Theme> = RwLock::new(Theme { color: String::new(), mode: String::new() });
+static THEME: RwLock<Theme> = RwLock::new(Theme {
+    color: String::new(),
+    mode: String::new(),
+});
 
 pub(super) const DEFAULT_ACCENT: &str = "#2563eb";
-pub(super) const MODES: [(&str, &str); 3] = [("auto", "Automatique (système)"), ("light", "Clair"), ("dark", "Sombre")];
+pub(super) const MODES: [(&str, &str); 3] = [
+    ("auto", "Automatique (système)"),
+    ("light", "Clair"),
+    ("dark", "Sombre"),
+];
 
 /// `#rrggbb` only — the value is injected into a stylesheet.
 pub(super) fn valid_color(c: &str) -> bool {
@@ -23,8 +30,16 @@ pub(super) fn valid_color(c: &str) -> bool {
 }
 
 pub(crate) fn set_theme(color: &str, mode: &str) {
-    let color = if valid_color(color) { color } else { DEFAULT_ACCENT };
-    let mode = if MODES.iter().any(|(m, _)| *m == mode) { mode } else { "auto" };
+    let color = if valid_color(color) {
+        color
+    } else {
+        DEFAULT_ACCENT
+    };
+    let mode = if MODES.iter().any(|(m, _)| *m == mode) {
+        mode
+    } else {
+        "auto"
+    };
     if let Ok(mut t) = THEME.write() {
         t.color = color.to_string();
         t.mode = mode.to_string();
@@ -42,7 +57,11 @@ fn current_theme() -> (String, String) {
 fn on_color(hex: &str) -> &'static str {
     let ch = |i: usize| {
         let v = u8::from_str_radix(&hex[i..i + 2], 16).unwrap_or(0) as f64 / 255.0;
-        if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        if v <= 0.03928 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
     };
     let lum = 0.2126 * ch(1) + 0.7152 * ch(3) + 0.0722 * ch(5);
     if lum > 0.42 { "#111827" } else { "#ffffff" }
@@ -131,7 +150,14 @@ pub(super) struct Page<'a> {
 
 impl<'a> Page<'a> {
     pub(super) fn new(title: &'a str, nav: Nav, body: &'a str) -> Self {
-        Self { title, nav, class: "", head: "", css: "", body }
+        Self {
+            title,
+            nav,
+            class: "",
+            head: "",
+            css: "",
+            body,
+        }
     }
 
     pub(super) fn class(mut self, class: &'a str) -> Self {
@@ -155,7 +181,11 @@ impl<'a> Page<'a> {
         let nav: String = NAV_ITEMS
             .iter()
             .map(|(item, href, label)| {
-                let current = if *item == self.nav { r#" class="active" aria-current="page""# } else { "" };
+                let current = if *item == self.nav {
+                    r#" class="active" aria-current="page""#
+                } else {
+                    ""
+                };
                 format!(r#"<a href="{href}"{current}>{label}</a>"#)
             })
             .collect();

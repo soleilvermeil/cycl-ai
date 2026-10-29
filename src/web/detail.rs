@@ -1,5 +1,8 @@
 use super::format::{format_datetime_fr, format_duration_hms};
-use super::{annotate_acronyms, escape_html, llm_notice, markdown_download, render_zone_bar, AppState, WarnQuery};
+use super::{
+    AppState, WarnQuery, annotate_acronyms, escape_html, llm_notice, markdown_download,
+    render_zone_bar,
+};
 use axum::extract::{Form, Path, Query, State};
 use axum::response::{Html, Redirect};
 use serde::Deserialize;
@@ -116,7 +119,9 @@ async fn fetch_activity(pool: &SqlitePool, id: i64) -> anyhow::Result<Option<Act
         max_hr: r.max_hr,
         tss: r.tss,
         intensity_factor: r.intensity_factor,
-        zone_secs: [r.zone1_s, r.zone2_s, r.zone3_s, r.zone4_s, r.zone5_s, r.zone6_s, r.zone7_s],
+        zone_secs: [
+            r.zone1_s, r.zone2_s, r.zone3_s, r.zone4_s, r.zone5_s, r.zone6_s, r.zone7_s,
+        ],
         bilan: r.bilan,
         streams_json: r.streams_json,
         user_context: r.user_context,
@@ -127,8 +132,21 @@ async fn fetch_activity(pool: &SqlitePool, id: i64) -> anyhow::Result<Option<Act
 }
 
 #[allow(clippy::type_complexity)]
-async fn fetch_segment_efforts(pool: &SqlitePool, activity_id: i64) -> anyhow::Result<Vec<SegmentEffortRow>> {
-    let rows: Vec<(i64, String, f64, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<i64>, Option<i64>)> = sqlx::query_as(
+async fn fetch_segment_efforts(
+    pool: &SqlitePool,
+    activity_id: i64,
+) -> anyhow::Result<Vec<SegmentEffortRow>> {
+    let rows: Vec<(
+        i64,
+        String,
+        f64,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+        Option<i64>,
+        Option<i64>,
+    )> = sqlx::query_as(
         r#"
         SELECT rs.id, rs.name, se.avg_power_w, se.delta_vs_pr_pct, se.delta_vs_last_pct,
                se.start_distance_m, se.end_distance_m, se.pr_activity_id, se.last_activity_id
@@ -142,17 +160,29 @@ async fn fetch_segment_efforts(pool: &SqlitePool, activity_id: i64) -> anyhow::R
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(reference_segment_id, name, avg_power_w, delta_vs_pr_pct, delta_vs_last_pct, start_distance_m, end_distance_m, pr_activity_id, last_activity_id)| SegmentEffortRow {
-            reference_segment_id,
-            name,
-            avg_power_w,
-            delta_vs_pr_pct,
-            delta_vs_last_pct,
-            start_distance_m,
-            end_distance_m,
-            pr_activity_id,
-            last_activity_id,
-        })
+        .map(
+            |(
+                reference_segment_id,
+                name,
+                avg_power_w,
+                delta_vs_pr_pct,
+                delta_vs_last_pct,
+                start_distance_m,
+                end_distance_m,
+                pr_activity_id,
+                last_activity_id,
+            )| SegmentEffortRow {
+                reference_segment_id,
+                name,
+                avg_power_w,
+                delta_vs_pr_pct,
+                delta_vs_last_pct,
+                start_distance_m,
+                end_distance_m,
+                pr_activity_id,
+                last_activity_id,
+            },
+        )
         .collect())
 }
 
@@ -197,10 +227,17 @@ async fn fetch_segment_curve(
     }
     let sampled = downsample_indices(idxs.len(), 200);
     let sel: Vec<usize> = sampled.iter().map(|&i| idxs[i]).collect();
-    let distance_km: Vec<f64> = sel.iter().map(|&i| (distance[i] - start_m) / 1000.0).collect();
+    let distance_km: Vec<f64> = sel
+        .iter()
+        .map(|&i| (distance[i] - start_m) / 1000.0)
+        .collect();
     let power = pick(watts.as_deref(), &sel);
     let hr = pick(heartrate.as_deref(), &sel);
-    Ok(Some(SegmentCurve { distance_km, power, hr }))
+    Ok(Some(SegmentCurve {
+        distance_km,
+        power,
+        hr,
+    }))
 }
 
 /// Only meaningful with >1 row — Strava always returns at least one lap
@@ -214,18 +251,25 @@ async fn fetch_laps(pool: &SqlitePool, activity_id: i64) -> anyhow::Result<Vec<L
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(lap_index, elapsed_time_s, distance_m, avg_power_w, avg_hr)| LapRow {
-            lap_index,
-            elapsed_time_s,
-            distance_m,
-            avg_power_w,
-            avg_hr,
-        })
+        .map(
+            |(lap_index, elapsed_time_s, distance_m, avg_power_w, avg_hr)| LapRow {
+                lap_index,
+                elapsed_time_s,
+                distance_m,
+                avg_power_w,
+                avg_hr,
+            },
+        )
         .collect())
 }
 
 fn f64_stream(v: &Value, key: &str) -> Option<Vec<f64>> {
-    v.get(key)?.get("data")?.as_array()?.iter().map(|x| x.as_f64()).collect()
+    v.get(key)?
+        .get("data")?
+        .as_array()?
+        .iter()
+        .map(|x| x.as_f64())
+        .collect()
 }
 
 fn latlng_stream(v: &Value) -> Option<Vec<[f64; 2]>> {
@@ -253,7 +297,11 @@ fn pick(arr: Option<&[f64]>, indices: &[usize]) -> Option<Vec<f64>> {
     arr.map(|a| {
         indices
             .iter()
-            .map(|&i| a.get(i).copied().unwrap_or_else(|| *a.last().unwrap_or(&0.0)))
+            .map(|&i| {
+                a.get(i)
+                    .copied()
+                    .unwrap_or_else(|| *a.last().unwrap_or(&0.0))
+            })
             .collect()
     })
 }
@@ -264,7 +312,9 @@ fn pick(arr: Option<&[f64]>, indices: &[usize]) -> Option<Vec<f64>> {
 /// only gives durations) into a distance-km boundary for the distance-based
 /// chart's x-axis.
 fn distance_at_time_s(time: &[f64], distance: &[f64], t_s: f64) -> f64 {
-    let idx = time.partition_point(|&t| t < t_s).min(time.len().saturating_sub(1));
+    let idx = time
+        .partition_point(|&t| t < t_s)
+        .min(time.len().saturating_sub(1));
     distance.get(idx).copied().unwrap_or(0.0)
 }
 
@@ -290,7 +340,13 @@ fn build_speed_stream(time: &[f64], distance: &[f64]) -> Vec<f64> {
 fn pace_from_speed(speed_kmh: &[f64]) -> Vec<f64> {
     speed_kmh
         .iter()
-        .map(|v| if *v > 4.0 { 60.0 / v } else { MAX_PACE_MIN_PER_KM })
+        .map(|v| {
+            if *v > 4.0 {
+                60.0 / v
+            } else {
+                MAX_PACE_MIN_PER_KM
+            }
+        })
         .collect()
 }
 
@@ -388,7 +444,14 @@ fn render_combo_chart(
             if is_run { "min/km" } else { "km/h" },
             if is_run { "Allure" } else { "Vitesse" },
         ),
-        ("cadence", &cad, cadence, SERIES_COLOR_CADENCE, "rpm", "Cadence"),
+        (
+            "cadence",
+            &cad,
+            cadence,
+            SERIES_COLOR_CADENCE,
+            "rpm",
+            "Cadence",
+        ),
     ];
 
     let mut available: Vec<(&str, &str, &str)> = Vec::new(); // (key, label, color)
@@ -414,7 +477,11 @@ fn render_combo_chart(
             ));
             continue;
         }
-        let axis_min = if *key == "hr" { (min - 5.0).max(0.0) } else { 0.0 };
+        let axis_min = if *key == "hr" {
+            (min - 5.0).max(0.0)
+        } else {
+            0.0
+        };
         scales.push(format!(
             r#""{axis_id}":{{display:{visible},position:"{side}",min:{axis_min:.0},max:{:.0},title:{{display:true,text:"{unit}",color:"{color}"}},ticks:{{color:"{color}"}},grid:{{drawOnChartArea:false}}}}"#,
             max + max * 0.05,
@@ -623,7 +690,13 @@ fn render_combo_chart(
     )
 }
 
-pub(super) const HR_ZONE_NAMES: [&str; 5] = ["Récupération", "Endurance", "Tempo", "Seuil", "VO2max/Anaérobie"];
+pub(super) const HR_ZONE_NAMES: [&str; 5] = [
+    "Récupération",
+    "Endurance",
+    "Tempo",
+    "Seuil",
+    "VO2max/Anaérobie",
+];
 pub(super) const HR_ZONE_BOUNDS: [f64; 6] = [0.0, 0.60, 0.70, 0.80, 0.90, f64::INFINITY];
 // Matches the user's other training tools: gris/bleu/vert/orange/rouge.
 const HR_ZONE_COLORS: [&str; 5] = ["#9ca3af", "#3b82f6", "#22c55e", "#f97316", "#dc2626"];
@@ -687,7 +760,13 @@ fn power_zone_index(watts: f64, ftp: f64) -> usize {
     7
 }
 
-fn compute_lap_power_zone_secs(watts: &[f64], time: &[f64], start_s: f64, end_s: f64, ftp: f64) -> [i64; 7] {
+fn compute_lap_power_zone_secs(
+    watts: &[f64],
+    time: &[f64],
+    start_s: f64,
+    end_s: f64,
+    ftp: f64,
+) -> [i64; 7] {
     let mut zones = [0i64; 7];
     let n = watts.len().min(time.len());
     for i in 1..n {
@@ -713,7 +792,13 @@ fn render_hr_zone_bar(zone_secs: &[i64; 5], hr_rest: f64, hr_max: f64) -> String
                 format!(">{low:.0}bpm")
             };
             let name = format!("Z{} {}", i + 1, HR_ZONE_NAMES[i]);
-            (name, range, HR_ZONE_COLORS[i], zone_secs[i], format!("hr_{}", i + 1))
+            (
+                name,
+                range,
+                HR_ZONE_COLORS[i],
+                zone_secs[i],
+                format!("hr_{}", i + 1),
+            )
         })
         .collect();
     super::render_zone_rows(&rows)
@@ -768,7 +853,8 @@ fn render_leaflet_map(latlng: &[[f64; 2]], distance_km: &[f64]) -> String {
     let lat_mid = sampled.iter().map(|p| p[0]).sum::<f64>() / sampled.len() as f64;
     let lng_mid = sampled.iter().map(|p| p[1]).sum::<f64>() / sampled.len() as f64;
     let points_json = serde_json::to_string(&sampled).unwrap_or_else(|_| "[]".to_string());
-    let distances_json = serde_json::to_string(&sampled_distances).unwrap_or_else(|_| "[]".to_string());
+    let distances_json =
+        serde_json::to_string(&sampled_distances).unwrap_or_else(|_| "[]".to_string());
 
     format!(
         r##"<div id="detail-map" class="detail-map" style="border-radius:8px;"></div>
@@ -832,7 +918,9 @@ pub async fn activity_detail(
     let Some(activity) = activity else {
         return Html("<p>Activité introuvable. <a href=\"/\">Retour</a></p>".to_string());
     };
-    let segment_efforts = fetch_segment_efforts(&state.pool, id).await.unwrap_or_default();
+    let segment_efforts = fetch_segment_efforts(&state.pool, id)
+        .await
+        .unwrap_or_default();
     let laps = fetch_laps(&state.pool, id).await.unwrap_or_default();
     let (ftp_watts, hr_rest, hr_max): (i64, i64, i64) =
         sqlx::query_as("SELECT ftp_watts, hr_rest, hr_max FROM athlete_config WHERE id = 1")
@@ -845,7 +933,10 @@ pub async fn activity_detail(
         .as_deref()
         .and_then(|s| serde_json::from_str(s).ok());
 
-    let time = streams.as_ref().and_then(|v| f64_stream(v, "time")).unwrap_or_default();
+    let time = streams
+        .as_ref()
+        .and_then(|v| f64_stream(v, "time"))
+        .unwrap_or_default();
     let watts = streams.as_ref().and_then(|v| f64_stream(v, "watts"));
     let heartrate = streams.as_ref().and_then(|v| f64_stream(v, "heartrate"));
     let altitude = streams.as_ref().and_then(|v| f64_stream(v, "altitude"));
@@ -858,8 +949,15 @@ pub async fn activity_detail(
     let speed = distance.as_ref().map(|d| build_speed_stream(&time, d));
     // Runners think in pace (min/km), not km/h: the "speed" series becomes a
     // pace series for runs.
-    let speed = if activity.is_run { speed.map(|s| pace_from_speed(&s)) } else { speed };
-    let distance_km: Vec<f64> = distance.as_ref().map(|d| d.iter().map(|m| m / 1000.0).collect()).unwrap_or_default();
+    let speed = if activity.is_run {
+        speed.map(|s| pace_from_speed(&s))
+    } else {
+        speed
+    };
+    let distance_km: Vec<f64> = distance
+        .as_ref()
+        .map(|d| d.iter().map(|m| m / 1000.0).collect())
+        .unwrap_or_default();
 
     let combo_chart_html = render_combo_chart(
         &distance_km,
@@ -894,7 +992,14 @@ pub async fn activity_detail(
                     compute_lap_power_zone_secs(w, &time, start_s, end_s, ftp_watts as f64)
                 });
                 let hr = heartrate.as_deref().map(|h| {
-                    compute_lap_hr_zone_secs(h, &time, start_s, end_s, hr_rest as f64, hr_max as f64)
+                    compute_lap_hr_zone_secs(
+                        h,
+                        &time,
+                        start_s,
+                        end_s,
+                        hr_rest as f64,
+                        hr_max as f64,
+                    )
                 });
                 serde_json::json!({ "power": power, "hr": hr })
             })
@@ -953,11 +1058,17 @@ pub async fn activity_detail(
             continue;
         };
         let pr_curve = match s.pr_activity_id {
-            Some(aid) => fetch_segment_curve(&state.pool, aid, s.reference_segment_id).await.ok().flatten(),
+            Some(aid) => fetch_segment_curve(&state.pool, aid, s.reference_segment_id)
+                .await
+                .ok()
+                .flatten(),
             None => None,
         };
         let last_curve = match s.last_activity_id {
-            Some(aid) => fetch_segment_curve(&state.pool, aid, s.reference_segment_id).await.ok().flatten(),
+            Some(aid) => fetch_segment_curve(&state.pool, aid, s.reference_segment_id)
+                .await
+                .ok()
+                .flatten(),
             None => None,
         };
         let curve_json = |c: &Option<SegmentCurve>| -> Value {
@@ -977,7 +1088,8 @@ pub async fn activity_detail(
             "last": curve_json(&last_curve),
         }));
     }
-    let segments_data_json = serde_json::to_string(&segments_data).unwrap_or_else(|_| "[]".to_string());
+    let segments_data_json =
+        serde_json::to_string(&segments_data).unwrap_or_else(|_| "[]".to_string());
 
     let segments_rows_html = if segment_efforts.is_empty() {
         "<p class=\"hint\">Aucun segment détecté sur cette sortie.</p>".to_string()
@@ -1055,7 +1167,11 @@ pub async fn activity_detail(
             .collect::<String>();
         format!(
             "<table class=\"laps-table\"><thead><tr><th>#</th><th>Durée</th><th>{}</th><th>FC</th></tr></thead><tbody>{rows}</tbody></table>",
-            if activity.is_run { "Allure" } else { "Puissance" }
+            if activity.is_run {
+                "Allure"
+            } else {
+                "Puissance"
+            }
         )
     } else {
         "<p class=\"hint\">Aucun lap manuel enregistré.</p>".to_string()
@@ -1126,10 +1242,18 @@ pub async fn activity_detail(
     let bilan_html = activity
         .bilan
         .as_deref()
-        .map(|t| format!("<p class=\"bilan\">{}</p>", annotate_acronyms(&escape_html(t))))
+        .map(|t| {
+            format!(
+                "<p class=\"bilan\">{}</p>",
+                annotate_acronyms(&escape_html(t))
+            )
+        })
         .unwrap_or_default();
 
-    let has_api_key = crate::settings::fetch(&state.pool).await.map(|s| s.has_llm_key()).unwrap_or(false);
+    let has_api_key = crate::settings::fetch(&state.pool)
+        .await
+        .map(|s| s.has_llm_key())
+        .unwrap_or(false);
     let llm_notice_html = llm_notice(has_api_key, q.warn.as_deref());
 
     let context_form_html = format!(
@@ -1143,7 +1267,11 @@ pub async fn activity_detail(
          </div>\
          </form>",
         escape_html(activity.user_context.as_deref().unwrap_or("")),
-        button_label = if activity.bilan.is_some() { "Régénérer le bilan avec ce contexte" } else { "Générer le bilan" },
+        button_label = if activity.bilan.is_some() {
+            "Régénérer le bilan avec ce contexte"
+        } else {
+            "Générer le bilan"
+        },
     );
 
     // Editable in the UI (not just synced from Strava) since a GPX/FIT
@@ -1175,21 +1303,38 @@ pub async fn activity_detail(
             format!(r#"<p><a href="https://connect.garmin.com/modern/activity/{gid}" target="_blank" rel="noopener">voir sur Garmin Connect ↗</a></p>"#)
         }).unwrap_or_default()
     } else if activity.source != "file" && id > 0 {
-        format!(r#"<p><a href="https://www.strava.com/activities/{id}" target="_blank" rel="noopener">voir sur Strava ↗</a></p>"#)
+        format!(
+            r#"<p><a href="https://www.strava.com/activities/{id}" target="_blank" rel="noopener">voir sur Strava ↗</a></p>"#
+        )
     } else {
         String::new()
     };
 
-    let stat_row = |label: &str, value: String| format!("<div class=\"stat\"><div class=\"value\">{value}</div><div class=\"label\">{label}</div></div>");
+    let stat_row = |label: &str, value: String| {
+        format!(
+            "<div class=\"stat\"><div class=\"value\">{value}</div><div class=\"label\">{label}</div></div>"
+        )
+    };
     let stats_html = [
-        stat_row("Distance", format!("{:.1} km", activity.distance_m / 1000.0)),
+        stat_row(
+            "Distance",
+            format!("{:.1} km", activity.distance_m / 1000.0),
+        ),
         stat_row("Durée", format_duration_hms(activity.duration_s)),
         stat_row("D+", format!("{:.0} m", activity.elevation_gain_m)),
         activity
             .tss
-            .map(|t| stat_row(&annotate_acronyms(if activity.is_run { "hrTSS" } else { "TSS" }), format!("{t:.0}")))
+            .map(|t| {
+                stat_row(
+                    &annotate_acronyms(if activity.is_run { "hrTSS" } else { "TSS" }),
+                    format!("{t:.0}"),
+                )
+            })
             .unwrap_or_default(),
-        activity.intensity_factor.map(|v| stat_row(&annotate_acronyms("IF"), format!("{v:.2}"))).unwrap_or_default(),
+        activity
+            .intensity_factor
+            .map(|v| stat_row(&annotate_acronyms("IF"), format!("{v:.2}")))
+            .unwrap_or_default(),
         if activity.is_run {
             super::format::format_pace(activity.distance_m, activity.duration_s)
                 .map(|p| stat_row("Allure moy.", format!("{p} /km")))
@@ -1197,10 +1342,22 @@ pub async fn activity_detail(
         } else {
             String::new()
         },
-        activity.avg_power_w.map(|v| stat_row("Puiss. moy.", format!("{v:.0}W"))).unwrap_or_default(),
-        activity.normalized_power_w.map(|v| stat_row(&annotate_acronyms("NP"), format!("{v:.0}W"))).unwrap_or_default(),
-        activity.avg_hr.map(|v| stat_row("FC moy.", format!("{v:.0}bpm"))).unwrap_or_default(),
-        activity.max_hr.map(|v| stat_row("FC max", format!("{v:.0}bpm"))).unwrap_or_default(),
+        activity
+            .avg_power_w
+            .map(|v| stat_row("Puiss. moy.", format!("{v:.0}W")))
+            .unwrap_or_default(),
+        activity
+            .normalized_power_w
+            .map(|v| stat_row(&annotate_acronyms("NP"), format!("{v:.0}W")))
+            .unwrap_or_default(),
+        activity
+            .avg_hr
+            .map(|v| stat_row("FC moy.", format!("{v:.0}bpm")))
+            .unwrap_or_default(),
+        activity
+            .max_hr
+            .map(|v| stat_row("FC max", format!("{v:.0}bpm")))
+            .unwrap_or_default(),
     ]
     .concat();
 
@@ -1310,11 +1467,15 @@ pub async fn activity_detail(
     );
 
     Html(
-        super::layout::Page::new(&format_datetime_fr(&activity.started_at), super::layout::Nav::Home, &body)
-            .class("wide detail-page")
-            .head(DETAIL_HEAD)
-            .css(DETAIL_CSS)
-            .render(),
+        super::layout::Page::new(
+            &format_datetime_fr(&activity.started_at),
+            super::layout::Nav::Home,
+            &body,
+        )
+        .class("wide detail-page")
+        .head(DETAIL_HEAD)
+        .css(DETAIL_CSS)
+        .render(),
     )
 }
 
@@ -1333,7 +1494,11 @@ pub async fn update_description(
     Form(form): Form<DescriptionForm>,
 ) -> Redirect {
     let description = form.description.trim();
-    let description = if description.is_empty() { None } else { Some(description) };
+    let description = if description.is_empty() {
+        None
+    } else {
+        Some(description)
+    };
 
     let _ = sqlx::query("UPDATE activities SET description = ? WHERE id = ?")
         .bind(description)
@@ -1365,14 +1530,20 @@ pub async fn regenerate_bilan(
     save_user_context(&state.pool, id, &form.user_context).await;
 
     let Ok(settings) = crate::settings::fetch(&state.pool).await else {
-        tracing::error!(activity_id = id, "failed to load settings for bilan regeneration");
+        tracing::error!(
+            activity_id = id,
+            "failed to load settings for bilan regeneration"
+        );
         return Redirect::to(&format!("/activity/{id}"));
     };
     if !settings.has_llm_key() {
-        tracing::warn!(activity_id = id, "bilan requested without an Anthropic API key, skipping LLM call");
+        tracing::warn!(
+            activity_id = id,
+            "bilan requested without an API key, skipping LLM call"
+        );
         return Redirect::to(&format!("/activity/{id}?warn=no_api_key"));
     }
-    let client = crate::llm::AnthropicClient::new(settings.anthropic_api_key.clone());
+    let client = crate::llm::ProviderClient::from_settings(&settings);
     if let Err(err) = crate::llm::generate_activity_bilans(
         &state.pool,
         &client,
@@ -1401,13 +1572,19 @@ pub async fn activity_report(
     save_user_context(&state.pool, id, &form.user_context).await;
 
     let Ok(settings) = crate::settings::fetch(&state.pool).await else {
-        tracing::error!(activity_id = id, "failed to load settings for activity report");
+        tracing::error!(
+            activity_id = id,
+            "failed to load settings for activity report"
+        );
         return Redirect::to(&format!("/activity/{id}")).into_response();
     };
     match crate::llm::build_activity_message(&state.pool, id, &settings.athlete_profile).await {
         Ok(user_message) => {
             let body = crate::report::render(
-                &format!("Sortie du {}", format_datetime_fr(&started_at_of(&state.pool, id).await)),
+                &format!(
+                    "Sortie du {}",
+                    format_datetime_fr(&started_at_of(&state.pool, id).await)
+                ),
                 &settings.bilan_system_prompt,
                 &user_message,
                 crate::report::BILAN_ANSWER_FORMAT,
@@ -1433,14 +1610,17 @@ async fn started_at_of(pool: &SqlitePool, id: i64) -> String {
 
 async fn save_user_context(pool: &SqlitePool, id: i64, raw: &str) {
     let context = raw.trim();
-    let context = if context.is_empty() { None } else { Some(context) };
+    let context = if context.is_empty() {
+        None
+    } else {
+        Some(context)
+    };
     let _ = sqlx::query("UPDATE activities SET user_context = ? WHERE id = ?")
         .bind(context)
         .bind(id)
         .execute(pool)
         .await;
 }
-
 
 const DETAIL_HEAD: &str = r#"<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>"#;

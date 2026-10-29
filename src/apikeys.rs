@@ -3,7 +3,9 @@
 //! stores the matching public keys (`api_keys` table). Revoking a key takes
 //! effect on the next request — keys are read from the database every time.
 
-use jsonwebtoken::{decode, decode_header, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{
+    Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, decode_header, encode,
+};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
@@ -50,8 +52,17 @@ pub enum AuthError {
 }
 
 /// Registers a public key (PEM). Rejects anything that isn't a usable RSA key.
-pub async fn add(pool: &SqlitePool, name: &str, public_key_pem: &str, scope: Scope) -> anyhow::Result<()> {
-    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')) {
+pub async fn add(
+    pool: &SqlitePool,
+    name: &str,
+    public_key_pem: &str,
+    scope: Scope,
+) -> anyhow::Result<()> {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
         anyhow::bail!("key name must be non-empty and use only letters, digits, '-', '_' or '.'");
     }
     DecodingKey::from_rsa_pem(public_key_pem.as_bytes())
@@ -64,7 +75,9 @@ pub async fn add(pool: &SqlitePool, name: &str, public_key_pem: &str, scope: Sco
         .await
         .map_err(|e| match e {
             sqlx::Error::Database(ref d) if d.is_unique_violation() => {
-                anyhow::anyhow!("a key named '{name}' already exists (revoked keys keep their name)")
+                anyhow::anyhow!(
+                    "a key named '{name}' already exists (revoked keys keep their name)"
+                )
             }
             other => other.into(),
         })?;
@@ -73,14 +86,18 @@ pub async fn add(pool: &SqlitePool, name: &str, public_key_pem: &str, scope: Sco
 
 /// Revokes a key; returns false if there is no active key with that name.
 pub async fn revoke(pool: &SqlitePool, name: &str) -> anyhow::Result<bool> {
-    let done = sqlx::query("UPDATE api_keys SET revoked_at = datetime('now') WHERE name = ? AND revoked_at IS NULL")
-        .bind(name)
-        .execute(pool)
-        .await?;
+    let done = sqlx::query(
+        "UPDATE api_keys SET revoked_at = datetime('now') WHERE name = ? AND revoked_at IS NULL",
+    )
+    .bind(name)
+    .execute(pool)
+    .await?;
     Ok(done.rows_affected() > 0)
 }
 
-pub async fn list(pool: &SqlitePool) -> anyhow::Result<Vec<(String, String, String, Option<String>, Option<String>)>> {
+pub async fn list(
+    pool: &SqlitePool,
+) -> anyhow::Result<Vec<(String, String, String, Option<String>, Option<String>)>> {
     Ok(sqlx::query_as(
         "SELECT name, scope, created_at, last_used_at, revoked_at FROM api_keys ORDER BY id",
     )
@@ -90,7 +107,11 @@ pub async fn list(pool: &SqlitePool) -> anyhow::Result<Vec<(String, String, Stri
 
 /// Checks a bearer token for a request using `method`. On success returns the
 /// key's name.
-pub async fn authenticate(pool: &SqlitePool, token: &str, is_write: bool) -> Result<String, AuthError> {
+pub async fn authenticate(
+    pool: &SqlitePool,
+    token: &str,
+    is_write: bool,
+) -> Result<String, AuthError> {
     let header = decode_header(token).map_err(|_| AuthError::Invalid("malformed token"))?;
     if header.alg != Algorithm::RS256 {
         return Err(AuthError::Invalid("unsupported algorithm"));
@@ -110,7 +131,8 @@ pub async fn authenticate(pool: &SqlitePool, token: &str, is_write: bool) -> Res
     if revoked_at.is_some() {
         return Err(AuthError::Invalid("revoked key"));
     }
-    let key = DecodingKey::from_rsa_pem(pem.as_bytes()).map_err(|_| AuthError::Invalid("stored key unusable"))?;
+    let key = DecodingKey::from_rsa_pem(pem.as_bytes())
+        .map_err(|_| AuthError::Invalid("stored key unusable"))?;
 
     let mut validation = Validation::new(Algorithm::RS256);
     validation.leeway = LEEWAY_S;
@@ -152,7 +174,14 @@ pub fn mint_token(private_key_pem: &str, kid: &str, ttl_s: i64) -> anyhow::Resul
     header.kid = Some(kid.to_string());
     let key = EncodingKey::from_rsa_pem(private_key_pem.as_bytes())
         .map_err(|e| anyhow::anyhow!("not a valid RSA private key in PEM format: {e}"))?;
-    Ok(encode(&header, &Claims { iat: now, exp: now + ttl_s }, &key)?)
+    Ok(encode(
+        &header,
+        &Claims {
+            iat: now,
+            exp: now + ttl_s,
+        },
+        &key,
+    )?)
 }
 
 #[cfg(test)]
@@ -164,7 +193,10 @@ mod tests {
     const PUBLIC: &str = include_str!("../tests/fixtures/test_rsa_public.pem");
 
     async fn pool_with_key(scope: Scope) -> SqlitePool {
-        let pool = SqlitePoolOptions::new().connect("sqlite::memory:").await.unwrap();
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
         crate::db::migrate(&pool).await.unwrap();
         add(&pool, "laptop", PUBLIC, scope).await.unwrap();
         pool
@@ -174,21 +206,37 @@ mod tests {
     async fn valid_token_is_accepted() {
         let pool = pool_with_key(Scope::Read).await;
         let token = mint_token(PRIVATE, "laptop", 60).unwrap();
-        assert_eq!(authenticate(&pool, &token, false).await, Ok("laptop".to_string()));
+        assert_eq!(
+            authenticate(&pool, &token, false).await,
+            Ok("laptop".to_string())
+        );
     }
 
     #[tokio::test]
     async fn unknown_kid_wrong_key_and_garbage_are_rejected() {
         let pool = pool_with_key(Scope::Read).await;
         let other_kid = mint_token(PRIVATE, "nobody", 60).unwrap();
-        assert!(matches!(authenticate(&pool, &other_kid, false).await, Err(AuthError::Invalid(_))));
-        assert!(matches!(authenticate(&pool, "not.a.jwt", false).await, Err(AuthError::Invalid(_))));
+        assert!(matches!(
+            authenticate(&pool, &other_kid, false).await,
+            Err(AuthError::Invalid(_))
+        ));
+        assert!(matches!(
+            authenticate(&pool, "not.a.jwt", false).await,
+            Err(AuthError::Invalid(_))
+        ));
 
         // Same kid, but registered under a different public key: signature mismatch.
         let other_pem = include_str!("../tests/fixtures/test_rsa_public_other.pem");
-        sqlx::query("UPDATE api_keys SET public_key_pem = ?").bind(other_pem).execute(&pool).await.unwrap();
+        sqlx::query("UPDATE api_keys SET public_key_pem = ?")
+            .bind(other_pem)
+            .execute(&pool)
+            .await
+            .unwrap();
         let token = mint_token(PRIVATE, "laptop", 60).unwrap();
-        assert!(matches!(authenticate(&pool, &token, false).await, Err(AuthError::Invalid(_))));
+        assert!(matches!(
+            authenticate(&pool, &token, false).await,
+            Err(AuthError::Invalid(_))
+        ));
     }
 
     #[tokio::test]
@@ -198,11 +246,28 @@ mod tests {
         let sign = |iat: i64, exp: i64| {
             let mut h = Header::new(Algorithm::RS256);
             h.kid = Some("laptop".into());
-            encode(&h, &Claims { iat, exp }, &EncodingKey::from_rsa_pem(PRIVATE.as_bytes()).unwrap()).unwrap()
+            encode(
+                &h,
+                &Claims { iat, exp },
+                &EncodingKey::from_rsa_pem(PRIVATE.as_bytes()).unwrap(),
+            )
+            .unwrap()
         };
-        assert!(authenticate(&pool, &sign(now - 600, now - 300), false).await.is_err());
-        assert!(authenticate(&pool, &sign(now, now + 3600), false).await.is_err());
-        assert!(authenticate(&pool, &sign(now + 600, now + 660), false).await.is_err());
+        assert!(
+            authenticate(&pool, &sign(now - 600, now - 300), false)
+                .await
+                .is_err()
+        );
+        assert!(
+            authenticate(&pool, &sign(now, now + 3600), false)
+                .await
+                .is_err()
+        );
+        assert!(
+            authenticate(&pool, &sign(now + 600, now + 660), false)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -219,8 +284,14 @@ mod tests {
     async fn read_key_cannot_write() {
         let pool = pool_with_key(Scope::Read).await;
         let token = mint_token(PRIVATE, "laptop", 60).unwrap();
-        assert_eq!(authenticate(&pool, &token, true).await, Err(AuthError::Forbidden));
-        sqlx::query("UPDATE api_keys SET scope = 'write'").execute(&pool).await.unwrap();
+        assert_eq!(
+            authenticate(&pool, &token, true).await,
+            Err(AuthError::Forbidden)
+        );
+        sqlx::query("UPDATE api_keys SET scope = 'write'")
+            .execute(&pool)
+            .await
+            .unwrap();
         assert!(authenticate(&pool, &token, true).await.is_ok());
     }
 

@@ -3,11 +3,9 @@
 //! so it can be pasted into any chat assistant (Claude, ChatGPT…) when no API
 //! key is configured.
 
-pub const BILAN_ANSWER_FORMAT: &str =
-    "Réponds directement avec le bilan de la sortie (2-4 phrases, en français), sans introduction ni titre.";
+pub const BILAN_ANSWER_FORMAT: &str = "Réponds directement avec le bilan de la sortie (2-4 phrases, en français), sans introduction ni titre.";
 
-pub const DIGEST_ANSWER_FORMAT: &str =
-    "Réponds en respectant strictement le format de sortie décrit dans la consigne (objet JSON seul). \
+pub const DIGEST_ANSWER_FORMAT: &str = "Réponds en respectant strictement le format de sortie décrit dans la consigne (objet JSON seul). \
      Si tu préfères une réponse lisible, présente la séance en liste (échauffement, blocs, retour au calme, \
      avec durées et watts cibles) suivie de ton bilan qualitatif.";
 

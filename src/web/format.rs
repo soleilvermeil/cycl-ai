@@ -3,8 +3,18 @@ use chrono_tz::Europe::Paris;
 
 const WEEKDAYS_FR: [&str; 7] = ["Lun.", "Mar.", "Mer.", "Jeu.", "Ven.", "Sam.", "Dim."];
 const MONTHS_FR: [&str; 12] = [
-    "Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet", "Août", "Septembre",
-    "Octobre", "Novembre", "Décembre",
+    "Janvier",
+    "Février",
+    "Mars",
+    "Avril",
+    "Mai",
+    "Juin",
+    "Juillet",
+    "Août",
+    "Septembre",
+    "Octobre",
+    "Novembre",
+    "Décembre",
 ];
 
 /// Strava's `start_date` is RFC3339 UTC. Converted to Europe/Paris (handles
@@ -63,13 +73,19 @@ mod tests {
     #[test]
     fn formats_utc_summer_time_to_paris_cest() {
         // 2026-08-16T15:42:51Z is CEST (UTC+2) -> 17:42, a Sunday.
-        assert_eq!(format_datetime_fr("2026-08-16T15:42:51Z"), "Dim. 16 Août 17:42");
+        assert_eq!(
+            format_datetime_fr("2026-08-16T15:42:51Z"),
+            "Dim. 16 Août 17:42"
+        );
     }
 
     #[test]
     fn formats_utc_winter_time_to_paris_cet() {
         // 2026-01-05T10:00:00Z is CET (UTC+1) -> 11:00, a Monday.
-        assert_eq!(format_datetime_fr("2026-01-05T10:00:00Z"), "Lun. 5 Janvier 11:00");
+        assert_eq!(
+            format_datetime_fr("2026-01-05T10:00:00Z"),
+            "Lun. 5 Janvier 11:00"
+        );
     }
 
     #[test]

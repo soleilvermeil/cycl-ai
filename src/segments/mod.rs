@@ -13,11 +13,12 @@ const MATCH_THRESHOLD_M: f64 = 15.0;
 /// Strava's own effort/segment_efforts calculations.
 pub async fn import_starred(pool: &SqlitePool) -> anyhow::Result<()> {
     let settings = crate::settings::fetch(pool).await?;
-    let refresh_token: Option<String> =
-        sqlx::query_scalar::<_, Option<String>>("SELECT strava_refresh_token FROM sync_state WHERE id = 1")
-            .fetch_optional(pool)
-            .await?
-            .flatten();
+    let refresh_token: Option<String> = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT strava_refresh_token FROM sync_state WHERE id = 1",
+    )
+    .fetch_optional(pool)
+    .await?
+    .flatten();
 
     let client = StravaClient::authenticate(
         &settings.strava_client_id,
@@ -119,9 +120,13 @@ fn extract_portion(
     heartrate: Option<&[f64]>,
 ) -> Portion {
     let slice_avg = |data: Option<&[f64]>| {
-        data.and_then(|d| d.get(start_idx..=end_idx)).and_then(|s| mean(s))
+        data.and_then(|d| d.get(start_idx..=end_idx))
+            .and_then(|s| mean(s))
     };
-    let dt = time.get(end_idx).zip(time.get(start_idx)).map(|(e, s)| e - s);
+    let dt = time
+        .get(end_idx)
+        .zip(time.get(start_idx))
+        .map(|(e, s)| e - s);
     let dd = distance
         .get(end_idx)
         .zip(distance.get(start_idx))
@@ -164,13 +169,14 @@ pub(crate) fn latlng_array(v: &serde_json::Value) -> Option<Vec<[f64; 2]>> {
 /// are computed against the history that existed *before* it — a replay,
 /// not a batch aggregate, since those deltas depend on ordering.
 pub async fn run(pool: &SqlitePool) -> anyhow::Result<()> {
-    sqlx::query("DELETE FROM segment_efforts").execute(pool).await?;
+    sqlx::query("DELETE FROM segment_efforts")
+        .execute(pool)
+        .await?;
 
-    let ref_segments: Vec<(i64, f64, f64, f64, f64)> = sqlx::query_as(
-        "SELECT id, start_lat, start_lng, end_lat, end_lng FROM reference_segments",
-    )
-    .fetch_all(pool)
-    .await?;
+    let ref_segments: Vec<(i64, f64, f64, f64, f64)> =
+        sqlx::query_as("SELECT id, start_lat, start_lng, end_lat, end_lng FROM reference_segments")
+            .fetch_all(pool)
+            .await?;
     let ref_segments: Vec<RefSegment> = ref_segments
         .into_iter()
         .map(|(id, start_lat, start_lng, end_lat, end_lng)| RefSegment {
@@ -235,16 +241,16 @@ pub async fn run(pool: &SqlitePool) -> anyhow::Result<()> {
             .await?;
             let powers: Vec<f64> = history.iter().map(|(_, p)| *p).collect();
 
-            let pr = history.iter().fold(None::<(i64, f64)>, |acc, &(aid, p)| match acc {
-                Some((_, best)) if best >= p => acc,
-                _ => Some((aid, p)),
-            });
+            let pr = history
+                .iter()
+                .fold(None::<(i64, f64)>, |acc, &(aid, p)| match acc {
+                    Some((_, best)) if best >= p => acc,
+                    _ => Some((aid, p)),
+                });
             let recent_avg = mean(&powers[powers.len().saturating_sub(5)..]);
             let last = history.last().copied();
 
-            let pct_delta = |reference: Option<f64>| {
-                reference.map(|r| (power - r) / r * 100.0)
-            };
+            let pct_delta = |reference: Option<f64>| reference.map(|r| (power - r) / r * 100.0);
 
             sqlx::query(
                 r#"
@@ -292,11 +298,11 @@ mod tests {
     #[test]
     fn matches_segment_when_gps_passes_through() {
         let latlng = vec![
-            [49.0, 6.0],   // far away
+            [49.0, 6.0],       // far away
             [49.1000, 6.2000], // near start
             [49.1005, 6.2005], // mid
             [49.1010, 6.2010], // near end
-            [49.2, 6.3],   // far away after
+            [49.2, 6.3],       // far away after
         ];
         let seg = RefSegment {
             id: 1,

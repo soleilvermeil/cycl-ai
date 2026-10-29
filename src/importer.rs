@@ -9,7 +9,7 @@
 //! laps are always absent from a GPX import — no equivalent field exists in
 //! the format itself.
 
-use serde_json::{json, Value as Json};
+use serde_json::{Value as Json, json};
 
 pub struct ParsedLap {
     pub lap_index: i64,
@@ -107,7 +107,10 @@ mod fit {
     }
 
     fn field_f64(rec: &FitDataRecord, name: &str) -> Option<f64> {
-        rec.fields().iter().find(|f| f.name() == name).and_then(|f| value_f64(f.value()))
+        rec.fields()
+            .iter()
+            .find(|f| f.name() == name)
+            .and_then(|f| value_f64(f.value()))
     }
 
     /// `field_f64`, trying each name in order — some fields go by different
@@ -117,10 +120,13 @@ mod fit {
     }
 
     fn field_timestamp_epoch(rec: &FitDataRecord, name: &str) -> Option<i64> {
-        rec.fields().iter().find(|f| f.name() == name).and_then(|f| match f.value() {
-            Value::Timestamp(dt) => Some(dt.timestamp()),
-            _ => None,
-        })
+        rec.fields()
+            .iter()
+            .find(|f| f.name() == name)
+            .and_then(|f| match f.value() {
+                Value::Timestamp(dt) => Some(dt.timestamp()),
+                _ => None,
+            })
     }
 
     /// FIT stores lat/lng as semicircles (int32 range), not degrees.
@@ -156,13 +162,16 @@ mod fit {
         for rec in &records {
             match rec.kind() {
                 MesgNum::Record => {
-                    let Some(ts) = field_timestamp_epoch(rec, "timestamp") else { continue };
+                    let Some(ts) = field_timestamp_epoch(rec, "timestamp") else {
+                        continue;
+                    };
                     let start = *first_ts.get_or_insert(ts);
                     time.push((ts - start) as f64);
 
-                    if let (Some(lat), Some(lng)) =
-                        (field_f64(rec, "position_lat"), field_f64(rec, "position_long"))
-                    {
+                    if let (Some(lat), Some(lng)) = (
+                        field_f64(rec, "position_lat"),
+                        field_f64(rec, "position_long"),
+                    ) {
                         latlng.push([semicircle_to_deg(lat), semicircle_to_deg(lng)]);
                     }
 
@@ -203,14 +212,16 @@ mod fit {
                     });
                 }
                 MesgNum::Session => {
-                    session_start_epoch = session_start_epoch.or(field_timestamp_epoch(rec, "start_time"));
-                    session_duration_s = session_duration_s
-                        .or(field_f64(rec, "total_elapsed_time").map(|v| v.round() as i64));
+                    session_start_epoch =
+                        session_start_epoch.or(field_timestamp_epoch(rec, "start_time"));
+                    session_duration_s =
+                        session_duration_s
+                            .or(field_f64(rec, "total_elapsed_time").map(|v| v.round() as i64));
                     session_distance_m = session_distance_m.or(field_f64(rec, "total_distance"));
                     session_ascent_m = session_ascent_m.or(field_f64(rec, "total_ascent"));
                     session_avg_power = session_avg_power.or(field_f64(rec, "avg_power"));
-                    session_np = session_np
-                        .or(field_f64_any(rec, &["normalized_power", "norm_power"]));
+                    session_np =
+                        session_np.or(field_f64_any(rec, &["normalized_power", "norm_power"]));
                     session_avg_hr = session_avg_hr.or(field_f64(rec, "avg_heart_rate"));
                     session_max_hr = session_max_hr.or(field_f64(rec, "max_heart_rate"));
                 }
@@ -218,7 +229,10 @@ mod fit {
             }
         }
 
-        anyhow::ensure!(!time.is_empty(), "no Record messages with a timestamp found in FIT file");
+        anyhow::ensure!(
+            !time.is_empty(),
+            "no Record messages with a timestamp found in FIT file"
+        );
 
         let started_epoch = session_start_epoch.or(first_ts).unwrap();
         let started_at = chrono::DateTime::from_timestamp(started_epoch, 0)
@@ -265,11 +279,13 @@ mod fit {
 }
 
 mod gpx_fmt {
-    use super::{haversine_m, ParsedActivity};
+    use super::{ParsedActivity, haversine_m};
 
     fn point_epoch(wp: &gpx::Waypoint) -> Option<i64> {
         let s = wp.time?.format().ok()?;
-        chrono::DateTime::parse_from_rfc3339(&s).ok().map(|dt| dt.timestamp())
+        chrono::DateTime::parse_from_rfc3339(&s)
+            .ok()
+            .map(|dt| dt.timestamp())
     }
 
     /// GPX only ever carries position, elevation and time — no power, heart
@@ -393,7 +409,11 @@ mod tests {
         assert!(!streams.contains_key("watts"));
         assert!(!streams.contains_key("cadence"));
         for key in ["latlng", "altitude", "heartrate", "distance", "time"] {
-            assert_eq!(streams[key]["data"].as_array().unwrap().len(), 19, "stream {key}");
+            assert_eq!(
+                streams[key]["data"].as_array().unwrap().len(),
+                19,
+                "stream {key}"
+            );
         }
     }
 
@@ -447,7 +467,10 @@ mod tests {
         assert!(streams.contains_key("altitude"));
         assert!(!streams.contains_key("watts"));
         assert!(!streams.contains_key("heartrate"));
-        assert_eq!(streams["time"]["data"], serde_json::json!([0.0, 30.0, 60.0]));
+        assert_eq!(
+            streams["time"]["data"],
+            serde_json::json!([0.0, 30.0, 60.0])
+        );
     }
 
     #[test]

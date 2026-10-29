@@ -14,6 +14,8 @@ pub struct Config {
     pub strava_client_secret: String,
     pub strava_refresh_token: String,
     pub anthropic_api_key: String,
+    /// Personal OpenAI key. Empty until the user creates one on platform.openai.com.
+    pub openai_api_key: String,
     pub ftp_watts: u32,
     pub hr_max: u32,
     pub hr_rest: u32,
@@ -32,11 +34,16 @@ impl Config {
             strava_client_secret: env::var("STRAVA_CLIENT_SECRET").unwrap_or_default(),
             strava_refresh_token: env::var("STRAVA_REFRESH_TOKEN").unwrap_or_default(),
             anthropic_api_key: env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
+            openai_api_key: env::var("OPENAI_API_KEY").unwrap_or_default(),
             ftp_watts: env::var("FTP_WATTS")
                 .unwrap_or_else(|_| "200".into())
                 .parse()?,
-            hr_max: env::var("HR_MAX").unwrap_or_else(|_| "190".into()).parse()?,
-            hr_rest: env::var("HR_REST").unwrap_or_else(|_| "50".into()).parse()?,
+            hr_max: env::var("HR_MAX")
+                .unwrap_or_else(|_| "190".into())
+                .parse()?,
+            hr_rest: env::var("HR_REST")
+                .unwrap_or_else(|_| "50".into())
+                .parse()?,
             athlete_profile: env::var("ATHLETE_PROFILE").unwrap_or_default(),
             garmin_api_key: env::var("GARMIN_API_KEY").unwrap_or_default(),
         })

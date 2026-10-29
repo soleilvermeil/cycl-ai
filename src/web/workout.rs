@@ -1,5 +1,5 @@
-use super::workout_chart::{chart_div, CHART_CSS, CHART_JS};
-use super::{escape_html, AppState};
+use super::workout_chart::{CHART_CSS, CHART_JS, chart_div};
+use super::{AppState, escape_html};
 use crate::planned::Sport;
 use crate::workout::Athlete;
 use axum::extract::{Form, Path, State};
@@ -22,11 +22,18 @@ pub(super) async fn fetch_athlete(pool: &SqlitePool) -> Athlete {
     Athlete::load(pool).await
 }
 
-pub async fn list(State(state): State<AppState>, axum::extract::Query(q): axum::extract::Query<super::WarnQuery>) -> Html<String> {
+pub async fn list(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<super::WarnQuery>,
+) -> Html<String> {
     render_list_page(&state.pool, None, q.warn.as_deref()).await
 }
 
-async fn render_list_page(pool: &SqlitePool, error: Option<&str>, warn: Option<&str>) -> Html<String> {
+async fn render_list_page(
+    pool: &SqlitePool,
+    error: Option<&str>,
+    warn: Option<&str>,
+) -> Html<String> {
     let rows: Vec<WorkoutRow> = sqlx::query_as(
         "SELECT id, name, steps_json, source, created_at, sport FROM workouts ORDER BY created_at DESC",
     )
@@ -44,7 +51,12 @@ async fn render_list_page(pool: &SqlitePool, error: Option<&str>, warn: Option<&
     let error_html = error
         .map(|e| format!(r#"<p class="form-error">{}</p>"#, escape_html(e)))
         .unwrap_or_default();
-    let create_form = builder_form_html("/workouts", None, &ath, &template_extra_fields(Sport::Cycling));
+    let create_form = builder_form_html(
+        "/workouts",
+        None,
+        &ath,
+        &template_extra_fields(Sport::Cycling),
+    );
     let digest_html = super::digest_section(pool, warn).await;
 
     Html(page_shell(
@@ -54,7 +66,11 @@ async fn render_list_page(pool: &SqlitePool, error: Option<&str>, warn: Option<&
 {digest_html}
 <section><h2>Mes séances</h2><ul class="workout-list">{items_html}</ul></section>
 <section><h2>Nouvelle séance</h2>{error_html}{create_form}</section>"#,
-            header = super::layout::page_header("Séances", "Modèles réutilisables et concepteur d'échelons.", ""),
+            header = super::layout::page_header(
+                "Séances",
+                "Modèles réutilisables et concepteur d'échelons.",
+                ""
+            ),
         ),
     ))
 }
@@ -66,7 +82,11 @@ fn render_workout_card(w: &WorkoutRow, ath: &Athlete) -> String {
         .and_then(|d| d.as_f64())
         .map(|d| format!(" · ~{d:.1}km estimés"))
         .unwrap_or_default();
-    let source_label = if w.source == "digest" { "généré par digest" } else { "créé manuellement" };
+    let source_label = if w.source == "digest" {
+        "généré par digest"
+    } else {
+        "créé manuellement"
+    };
 
     format!(
         r#"<li class="workout-card">
@@ -97,7 +117,12 @@ pub async fn edit_form(State(state): State<AppState>, Path(id): Path<i64>) -> Ht
     };
     let ath = fetch_athlete(&state.pool).await;
 
-    let form = builder_form_html(&format!("/workouts/{id}"), Some(&row.steps_json), &ath, &template_extra_fields(Sport::from_db(&row.sport)));
+    let form = builder_form_html(
+        &format!("/workouts/{id}"),
+        Some(&row.steps_json),
+        &ath,
+        &template_extra_fields(Sport::from_db(&row.sport)),
+    );
     let delete_form = format!(
         r#"<form method="post" action="/workouts/{id}/delete" onsubmit="return confirm('Supprimer cette séance ?');">
 <button type="submit" class="danger">Supprimer</button>
@@ -105,7 +130,9 @@ pub async fn edit_form(State(state): State<AppState>, Path(id): Path<i64>) -> Ht
     );
 
     let zwo_link = if Sport::from_db(&row.sport) == Sport::Cycling {
-        format!(r#"<p><a class="secondary-action" href="/workouts/{id}/zwo" download>Exporter pour Zwift (.zwo)</a></p>"#)
+        format!(
+            r#"<p><a class="secondary-action" href="/workouts/{id}/zwo" download>Exporter pour Zwift (.zwo)</a></p>"#
+        )
     } else {
         String::new()
     };
@@ -121,15 +148,19 @@ pub async fn edit_form(State(state): State<AppState>, Path(id): Path<i64>) -> Ht
 }
 
 /// `GET /workouts/{id}/zwo` — the saved session as a Zwift workout file.
-pub async fn export_zwo(State(state): State<AppState>, Path(id): Path<i64>) -> axum::response::Response {
-    use axum::http::{header, StatusCode};
+pub async fn export_zwo(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> axum::response::Response {
+    use axum::http::{StatusCode, header};
     use axum::response::IntoResponse;
-    let row: Option<(String, String)> = sqlx::query_as("SELECT name, steps_json FROM workouts WHERE id = ?")
-        .bind(id)
-        .fetch_optional(&state.pool)
-        .await
-        .ok()
-        .flatten();
+    let row: Option<(String, String)> =
+        sqlx::query_as("SELECT name, steps_json FROM workouts WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&state.pool)
+            .await
+            .ok()
+            .flatten();
     let Some((name, steps_json)) = row else {
         return StatusCode::NOT_FOUND.into_response();
     };
@@ -142,12 +173,24 @@ pub async fn export_zwo(State(state): State<AppState>, Path(id): Path<i64>) -> a
     let ath = fetch_athlete(&state.pool).await;
     let file: String = name
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     (
         [
-            (header::CONTENT_TYPE, "application/xml; charset=utf-8".to_string()),
-            (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{file}.zwo\"")),
+            (
+                header::CONTENT_TYPE,
+                "application/xml; charset=utf-8".to_string(),
+            ),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{file}.zwo\""),
+            ),
         ],
         crate::zwo::to_zwo(&workout, &ath),
     )
@@ -168,7 +211,11 @@ pub async fn create(State(state): State<AppState>, Form(form): Form<WorkoutForm>
     save(&state, None, form).await
 }
 
-pub async fn update(State(state): State<AppState>, Path(id): Path<i64>, Form(form): Form<WorkoutForm>) -> Html<String> {
+pub async fn update(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Form(form): Form<WorkoutForm>,
+) -> Html<String> {
     save(&state, Some(id), form).await
 }
 
@@ -178,7 +225,15 @@ async fn save(state: &AppState, id: Option<i64>, form: WorkoutForm) -> Html<Stri
 
     let value: Value = match serde_json::from_str(&form.steps_json) {
         Ok(v) => v,
-        Err(err) => return error_page(id, &form.steps_json, &format!("JSON invalide : {err}"), &ath, sport),
+        Err(err) => {
+            return error_page(
+                id,
+                &form.steps_json,
+                &format!("JSON invalide : {err}"),
+                &ath,
+                sport,
+            );
+        }
     };
     let prepared = match crate::planned::prepare(&value, &ath, sport) {
         Ok(p) => p,
@@ -191,7 +246,15 @@ async fn save(state: &AppState, id: Option<i64>, form: WorkoutForm) -> Html<Stri
     } else {
         match crate::planned::parse_date(planned_date) {
             Some(d) => Some(d),
-            None => return error_page(id, &form.steps_json, "Date de planification invalide.", &ath, sport),
+            None => {
+                return error_page(
+                    id,
+                    &form.steps_json,
+                    "Date de planification invalide.",
+                    &ath,
+                    sport,
+                );
+            }
         }
     };
 
@@ -208,21 +271,31 @@ async fn save(state: &AppState, id: Option<i64>, form: WorkoutForm) -> Html<Stri
             .await;
             Some(id)
         }
-        None => sqlx::query("INSERT INTO workouts (name, steps_json, source, sport) VALUES (?, ?, 'manual', ?)")
-            .bind(&prepared.name)
-            .bind(&prepared.steps_json)
-            .bind(sport.as_str())
-            .execute(&state.pool)
-            .await
-            .ok()
-            .map(|r| r.last_insert_rowid()),
+        None => sqlx::query(
+            "INSERT INTO workouts (name, steps_json, source, sport) VALUES (?, ?, 'manual', ?)",
+        )
+        .bind(&prepared.name)
+        .bind(&prepared.steps_json)
+        .bind(sport.as_str())
+        .execute(&state.pool)
+        .await
+        .ok()
+        .map(|r| r.last_insert_rowid()),
     };
 
     // The planned entry gets its own copy of the steps: later edits to this
     // template don't move sessions already on the calendar.
     if let Some(date) = planned_date {
-        if let Err(err) =
-            crate::planned::insert(&state.pool, date, &prepared, None, template_id, "manual", sport).await
+        if let Err(err) = crate::planned::insert(
+            &state.pool,
+            date,
+            &prepared,
+            None,
+            template_id,
+            "manual",
+            sport,
+        )
+        .await
         {
             tracing::error!(?err, "failed to schedule workout from the designer");
         }
@@ -235,12 +308,25 @@ async fn save(state: &AppState, id: Option<i64>, form: WorkoutForm) -> Html<Stri
 /// preserved and a visible error banner — a deliberate exception to the
 /// app's usual swallow-error-and-redirect convention, since a malformed
 /// step tree must be diagnosable rather than silently dropped.
-fn error_page(id: Option<i64>, submitted_steps_json: &str, error: &str, ath: &Athlete, sport: Sport) -> Html<String> {
-    let action = id.map(|i| format!("/workouts/{i}")).unwrap_or_else(|| "/workouts".to_string());
+fn error_page(
+    id: Option<i64>,
+    submitted_steps_json: &str,
+    error: &str,
+    ath: &Athlete,
+    sport: Sport,
+) -> Html<String> {
+    let action = id
+        .map(|i| format!("/workouts/{i}"))
+        .unwrap_or_else(|| "/workouts".to_string());
     // builder_form_html tolerates invalid/partial JSON here (falls back to
     // an empty workout for any field it can't read) — the raw text is only
     // meant to survive round-tripping when it *was* structurally close.
-    let form = builder_form_html(&action, Some(submitted_steps_json), ath, &template_extra_fields(sport));
+    let form = builder_form_html(
+        &action,
+        Some(submitted_steps_json),
+        ath,
+        &template_extra_fields(sport),
+    );
     let error_html = format!(r#"<p class="form-error">{}</p>"#, escape_html(error));
     Html(page_shell(
         "Séances",
@@ -252,7 +338,10 @@ fn error_page(id: Option<i64>, submitted_steps_json: &str, error: &str, ath: &At
 }
 
 pub async fn delete(State(state): State<AppState>, Path(id): Path<i64>) -> Redirect {
-    let _ = sqlx::query("DELETE FROM workouts WHERE id = ?").bind(id).execute(&state.pool).await;
+    let _ = sqlx::query("DELETE FROM workouts WHERE id = ?")
+        .bind(id)
+        .execute(&state.pool)
+        .await;
     Redirect::to("/workouts")
 }
 
@@ -303,7 +392,10 @@ pub(super) fn builder_form_html(
 ) -> String {
     let initial_json = initial_steps_json.unwrap_or(r#"{"name":"","steps":[]}"#);
     let initial_value: Value = serde_json::from_str(initial_json).unwrap_or(Value::Null);
-    let name = initial_value.get("name").and_then(|n| n.as_str()).unwrap_or("");
+    let name = initial_value
+        .get("name")
+        .and_then(|n| n.as_str())
+        .unwrap_or("");
 
     format!(
         r#"<script>window.__initialWorkout = {initial_json}; window.__workoutFtp = {ftp}; window.__workoutHr = {{rest: {hr_rest}, max: {hr_max}}}; window.__workoutRunPace = {run_pace};</script>
@@ -703,8 +795,14 @@ mod tests {
 
     #[test]
     fn rejects_empty_repeat_bad_duration_and_inverted_range() {
-        let empty_repeat = parse(r#"{"name":"x","steps":[{"type":"repeat","count":2,"steps":[]}]}"#);
-        assert!(empty_repeat.validate().unwrap().contains("au moins une étape"));
+        let empty_repeat =
+            parse(r#"{"name":"x","steps":[{"type":"repeat","count":2,"steps":[]}]}"#);
+        assert!(
+            empty_repeat
+                .validate()
+                .unwrap()
+                .contains("au moins une étape")
+        );
 
         let bad_duration = parse(
             r#"{"name":"x","steps":[{"type":"interval","duration":{"type":"time","value":"soon"},"target":{"type":"power_range","low":1,"high":2}}]}"#,
@@ -719,9 +817,17 @@ mod tests {
 
     #[test]
     fn chart_div_escapes_json_for_a_double_quoted_attribute() {
-        let ath = Athlete { ftp_watts: 205.0, hr_rest: 53.0, hr_max: 192.0, run_threshold_pace_s: 0.0 };
+        let ath = Athlete {
+            ftp_watts: 205.0,
+            hr_rest: 53.0,
+            hr_max: 192.0,
+            run_threshold_pace_s: 0.0,
+        };
         let html = chart_div(r#"{"name":"a\"b<c"}"#, &ath);
-        assert!(!html.contains("\"name\""), "raw quotes would end the attribute early");
+        assert!(
+            !html.contains("\"name\""),
+            "raw quotes would end the attribute early"
+        );
         assert!(html.contains("&quot;name&quot;"));
         assert!(html.contains("&lt;"));
     }

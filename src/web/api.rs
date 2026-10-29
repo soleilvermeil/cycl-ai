@@ -5,13 +5,13 @@
 //! `web::auth`.
 
 use super::detail::{HR_ZONE_BOUNDS, HR_ZONE_NAMES};
-use super::{tsb_zone_index, AppState, TSB_ZONES, ZONE_BOUNDS, ZONE_NAMES};
+use super::{AppState, TSB_ZONES, ZONE_BOUNDS, ZONE_NAMES, tsb_zone_index};
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::SqlitePool;
 
 pub(super) struct ApiError(StatusCode, String);
@@ -25,7 +25,10 @@ impl IntoResponse for ApiError {
 impl From<anyhow::Error> for ApiError {
     fn from(err: anyhow::Error) -> Self {
         tracing::error!(?err, "api request failed");
-        ApiError(StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+        ApiError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal error".to_string(),
+        )
     }
 }
 
@@ -172,7 +175,11 @@ fn activity_json(a: &ActivityRecord, coef: f64) -> Value {
     let is_run = crate::metrics::is_run(&a.sport_type);
     let km = a.distance_m / 1000.0;
     // Runs are expressed as pace (min/km), rides as speed (km/h).
-    let pace = if is_run { super::format::format_pace(a.distance_m, a.duration_s) } else { None };
+    let pace = if is_run {
+        super::format::format_pace(a.distance_m, a.duration_s)
+    } else {
+        None
+    };
     let speed = if !is_run && a.duration_s > 0 {
         Some(round(km / (a.duration_s as f64 / 3600.0), 1))
     } else {
@@ -211,10 +218,16 @@ pub(super) struct ActivitiesQuery {
 
 /// `GET /api/v1/activities?limit=10&days=28&sport=run` — latest activities,
 /// newest first.
-pub(super) async fn activities(State(state): State<AppState>, Query(q): Query<ActivitiesQuery>) -> ApiResult {
+pub(super) async fn activities(
+    State(state): State<AppState>,
+    Query(q): Query<ActivitiesQuery>,
+) -> ApiResult {
     let limit = q.limit.unwrap_or(10).clamp(1, 200);
     // No `days` means no lower bound: every started_at sorts after "".
-    let since = q.days.map(|d| days_ago(d.clamp(1, 3650))).unwrap_or_default();
+    let since = q
+        .days
+        .map(|d| days_ago(d.clamp(1, 3650)))
+        .unwrap_or_default();
     let sport_filter = match q.sport.as_deref() {
         Some("ride") => "AND sport_type IN ('Ride', 'VirtualRide')",
         Some("run") => "AND sport_type IN ('Run', 'TrailRun')",
@@ -236,13 +249,17 @@ pub(super) async fn activities(State(state): State<AppState>, Query(q): Query<Ac
 /// `GET /api/v1/activities/{id}` — one activity with its laps, local segment
 /// efforts and the generated bilan (if any).
 pub(super) async fn activity(State(state): State<AppState>, Path(id): Path<i64>) -> ApiResult {
-    let row: Option<ActivityRecord> =
-        sqlx::query_as(&format!("SELECT {ACTIVITY_COLUMNS} FROM activities WHERE id = ?"))
-            .bind(id)
-            .fetch_optional(&state.pool)
-            .await?;
+    let row: Option<ActivityRecord> = sqlx::query_as(&format!(
+        "SELECT {ACTIVITY_COLUMNS} FROM activities WHERE id = ?"
+    ))
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await?;
     let Some(row) = row else {
-        return Err(ApiError(StatusCode::NOT_FOUND, format!("activity {id} not found")));
+        return Err(ApiError(
+            StatusCode::NOT_FOUND,
+            format!("activity {id} not found"),
+        ));
     };
     let coef = crate::metrics::get_hr_config(&state.pool).await?.tss_coef;
     let mut out = activity_json(&row, coef);
@@ -267,8 +284,20 @@ pub(super) async fn activity(State(state): State<AppState>, Path(id): Path<i64>)
     for (index, elapsed_s, distance_m, power, hr) in laps {
         let start = cursor_s;
         cursor_s += elapsed_s.max(0) as usize;
-        let stats = series.as_ref().map(|s| crate::performance::window_stats(s, start, cursor_s, &ath));
-        lap_items.push(lap_json(index, start, elapsed_s, distance_m, power, hr, stats.as_ref(), is_run, ath.ftp_watts));
+        let stats = series
+            .as_ref()
+            .map(|s| crate::performance::window_stats(s, start, cursor_s, &ath));
+        lap_items.push(lap_json(
+            index,
+            start,
+            elapsed_s,
+            distance_m,
+            power,
+            hr,
+            stats.as_ref(),
+            is_run,
+            ath.ftp_watts,
+        ));
     }
     out["laps"] = Value::Array(lap_items);
     out["performance"] = match &series {
@@ -299,10 +328,11 @@ pub(super) async fn activity(State(state): State<AppState>, Path(id): Path<i64>)
             .collect(),
     );
 
-    let bilan: Option<String> = sqlx::query_scalar("SELECT text FROM activity_bilans WHERE activity_id = ?")
-        .bind(id)
-        .fetch_optional(&state.pool)
-        .await?;
+    let bilan: Option<String> =
+        sqlx::query_scalar("SELECT text FROM activity_bilans WHERE activity_id = ?")
+            .bind(id)
+            .fetch_optional(&state.pool)
+            .await?;
     out["bilan"] = json!(bilan);
     Ok(Json(out))
 }
@@ -314,7 +344,10 @@ pub(super) struct SummaryQuery {
 
 /// `GET /api/v1/summary?days=28` — synthesis of recent training: totals,
 /// per-sport totals and a Monday-based weekly breakdown over the window.
-pub(super) async fn summary(State(state): State<AppState>, Query(q): Query<SummaryQuery>) -> ApiResult {
+pub(super) async fn summary(
+    State(state): State<AppState>,
+    Query(q): Query<SummaryQuery>,
+) -> ApiResult {
     let days = q.days.unwrap_or(28).clamp(1, 3650);
     let since = days_ago(days - 1);
     // hrTSS counts towards `tss` weighted by the configured coefficient, the
@@ -375,7 +408,12 @@ pub(super) async fn summary(State(state): State<AppState>, Query(q): Query<Summa
 }
 
 /// Totals over `[since, now]`, optionally for one `sport_type` only.
-async fn aggregate(pool: &SqlitePool, since: &str, sport: Option<&str>, coef: f64) -> Result<Value, ApiError> {
+async fn aggregate(
+    pool: &SqlitePool,
+    since: &str,
+    sport: Option<&str>,
+    coef: f64,
+) -> Result<Value, ApiError> {
     let (n, dist, dur, elev, tss, avg_if): (i64, f64, i64, f64, f64, Option<f64>) = sqlx::query_as(&format!(
         "SELECT COUNT(*), COALESCE(SUM(distance_m), 0.0), COALESCE(SUM(duration_s), 0), \
                 COALESCE(SUM(elevation_gain_m), 0.0), COALESCE(SUM({}), 0.0), AVG(intensity_factor) \
@@ -429,10 +467,11 @@ async fn current_athlete(pool: &SqlitePool) -> Result<crate::workout::Athlete, A
 /// `workout_id` when planning).
 pub(super) async fn workouts(State(state): State<AppState>) -> ApiResult {
     let ath = current_athlete(&state.pool).await?;
-    let rows: Vec<(i64, String, String, String, String)> =
-        sqlx::query_as("SELECT id, name, steps_json, source, sport FROM workouts ORDER BY created_at DESC")
-            .fetch_all(&state.pool)
-            .await?;
+    let rows: Vec<(i64, String, String, String, String)> = sqlx::query_as(
+        "SELECT id, name, steps_json, source, sport FROM workouts ORDER BY created_at DESC",
+    )
+    .fetch_all(&state.pool)
+    .await?;
     let items: Vec<Value> = rows
         .into_iter()
         .map(|(id, name, steps_json, source, sport)| {
@@ -461,12 +500,19 @@ pub(super) struct PlannedQuery {
 
 /// `GET /api/v1/planned?from=2026-10-01&to=2026-11-01` — planned sessions with
 /// `from <= date < to`. Defaults: a week back to six weeks ahead.
-pub(super) async fn planned_list(State(state): State<AppState>, Query(q): Query<PlannedQuery>) -> ApiResult {
+pub(super) async fn planned_list(
+    State(state): State<AppState>,
+    Query(q): Query<PlannedQuery>,
+) -> ApiResult {
     let today = chrono::Utc::now().date_naive();
     let parse = |v: &Option<String>, name: &str, default: chrono::NaiveDate| match v {
         None => Ok(default),
-        Some(s) => crate::planned::parse_date(s)
-            .ok_or_else(|| ApiError(StatusCode::BAD_REQUEST, format!("`{name}` must be a YYYY-MM-DD date"))),
+        Some(s) => crate::planned::parse_date(s).ok_or_else(|| {
+            ApiError(
+                StatusCode::BAD_REQUEST,
+                format!("`{name}` must be a YYYY-MM-DD date"),
+            )
+        }),
     };
     let from = parse(&q.from, "from", today - chrono::Duration::days(7))?;
     let to = parse(&q.to, "to", today + chrono::Duration::days(42))?;
@@ -474,7 +520,10 @@ pub(super) async fn planned_list(State(state): State<AppState>, Query(q): Query<
     let sport = match q.sport.as_deref() {
         None => None,
         Some(s) => Some(crate::planned::Sport::parse(s).ok_or_else(|| {
-            ApiError(StatusCode::BAD_REQUEST, "`sport` must be cycling, running or other".to_string())
+            ApiError(
+                StatusCode::BAD_REQUEST,
+                "`sport` must be cycling, running or other".to_string(),
+            )
         })?),
     };
     let rows = crate::planned::list_between(&state.pool, from, to).await?;
@@ -483,7 +532,9 @@ pub(super) async fn planned_list(State(state): State<AppState>, Query(q): Query<
         .filter(|p| sport.is_none_or(|s| crate::planned::Sport::from_db(&p.sport) == s))
         .map(|p| planned_json(p, &ath))
         .collect();
-    Ok(Json(json!({ "from": from.to_string(), "to": to.to_string(), "count": items.len(), "planned": items })))
+    Ok(Json(
+        json!({ "from": from.to_string(), "to": to.to_string(), "count": items.len(), "planned": items }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -511,26 +562,35 @@ pub(super) async fn planned_create(
     Json(req): Json<PlanRequest>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let bad = |msg: String| ApiError(StatusCode::BAD_REQUEST, msg);
-    let date = crate::planned::parse_date(&req.date).ok_or_else(|| bad("`date` must be a YYYY-MM-DD date".into()))?;
+    let date = crate::planned::parse_date(&req.date)
+        .ok_or_else(|| bad("`date` must be a YYYY-MM-DD date".into()))?;
     let ath = current_athlete(&state.pool).await?;
 
     let requested_sport = match req.sport.as_deref() {
         None => None,
         Some(s) => Some(
-            crate::planned::Sport::parse(s).ok_or_else(|| bad("`sport` must be cycling, running or other".into()))?,
+            crate::planned::Sport::parse(s)
+                .ok_or_else(|| bad("`sport` must be cycling, running or other".into()))?,
         ),
     };
 
     let (mut workout, template_id, template_sport) = match (req.workout_id, req.workout) {
-        (Some(_), Some(_)) => return Err(bad("give either `workout_id` or `workout`, not both".into())),
+        (Some(_), Some(_)) => {
+            return Err(bad("give either `workout_id` or `workout`, not both".into()));
+        }
         (None, None) => return Err(bad("`workout_id` or `workout` is required".into())),
         (Some(id), None) => {
-            let row: Option<(String, String)> = sqlx::query_as("SELECT steps_json, sport FROM workouts WHERE id = ?")
-                .bind(id)
-                .fetch_optional(&state.pool)
-                .await?;
-            let (steps, sport) =
-                row.ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("workout template {id} not found")))?;
+            let row: Option<(String, String)> =
+                sqlx::query_as("SELECT steps_json, sport FROM workouts WHERE id = ?")
+                    .bind(id)
+                    .fetch_optional(&state.pool)
+                    .await?;
+            let (steps, sport) = row.ok_or_else(|| {
+                ApiError(
+                    StatusCode::NOT_FOUND,
+                    format!("workout template {id} not found"),
+                )
+            })?;
             (
                 serde_json::from_str::<Value>(&steps).unwrap_or(Value::Null),
                 Some(id),
@@ -546,19 +606,37 @@ pub(super) async fn planned_create(
     }
 
     let prepared = crate::planned::prepare(&workout, &ath, sport).map_err(bad)?;
-    let id = crate::planned::insert(&state.pool, date, &prepared, req.notes.as_deref(), template_id, "api", sport).await?;
-    let created = crate::planned::get(&state.pool, id)
-        .await?
-        .ok_or_else(|| ApiError(StatusCode::INTERNAL_SERVER_ERROR, "planned session vanished".into()))?;
+    let id = crate::planned::insert(
+        &state.pool,
+        date,
+        &prepared,
+        req.notes.as_deref(),
+        template_id,
+        "api",
+        sport,
+    )
+    .await?;
+    let created = crate::planned::get(&state.pool, id).await?.ok_or_else(|| {
+        ApiError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "planned session vanished".into(),
+        )
+    })?;
     Ok((StatusCode::CREATED, Json(planned_json(&created, &ath))))
 }
 
 /// `DELETE /api/v1/planned/{id}` — remove a session from the calendar.
-pub(super) async fn planned_delete(State(state): State<AppState>, Path(id): Path<i64>) -> Result<StatusCode, ApiError> {
+pub(super) async fn planned_delete(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<StatusCode, ApiError> {
     if crate::planned::delete(&state.pool, id).await? {
         Ok(StatusCode::NO_CONTENT)
     } else {
-        Err(ApiError(StatusCode::NOT_FOUND, format!("planned session {id} not found")))
+        Err(ApiError(
+            StatusCode::NOT_FOUND,
+            format!("planned session {id} not found"),
+        ))
     }
 }
 
@@ -566,11 +644,16 @@ pub(super) async fn planned_delete(State(state): State<AppState>, Path(id): Path
 // Detailed performance (per lap, whole ride) and raw-ish streams
 // ---------------------------------------------------------------------------
 
-async fn load_series(pool: &SqlitePool, activity_id: i64, is_run: bool) -> Result<Option<crate::performance::Series>, ApiError> {
-    let streams: Option<String> = sqlx::query_scalar("SELECT streams_json FROM activity_streams WHERE activity_id = ?")
-        .bind(activity_id)
-        .fetch_optional(pool)
-        .await?;
+async fn load_series(
+    pool: &SqlitePool,
+    activity_id: i64,
+    is_run: bool,
+) -> Result<Option<crate::performance::Series>, ApiError> {
+    let streams: Option<String> =
+        sqlx::query_scalar("SELECT streams_json FROM activity_streams WHERE activity_id = ?")
+            .bind(activity_id)
+            .fetch_optional(pool)
+            .await?;
     Ok(streams
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
         .and_then(|v| crate::performance::Series::from_streams(&v, !is_run)))
@@ -592,7 +675,9 @@ fn lap_json(
     is_run: bool,
     ftp: f64,
 ) -> Value {
-    let distance_m = stats.and_then(|s| s.distance_m).unwrap_or(stored_distance_m);
+    let distance_m = stats
+        .and_then(|s| s.distance_m)
+        .unwrap_or(stored_distance_m);
     let avg_power = stats.and_then(|s| s.avg_power_w).or(stored_power);
     let np = stats.and_then(|s| s.normalized_power_w);
     let cadence = stats.and_then(|s| s.avg_cadence);
@@ -621,7 +706,11 @@ fn lap_json(
 
 /// Whole-activity metrics computed from the streams: peak/normalized power,
 /// variability, best-power curve, HR zones, power:HR decoupling.
-fn performance_json(series: &crate::performance::Series, is_run: bool, ath: &crate::workout::Athlete) -> Value {
+fn performance_json(
+    series: &crate::performance::Series,
+    is_run: bool,
+    ath: &crate::workout::Athlete,
+) -> Value {
     let w = crate::performance::window_stats(series, 0, series.len, ath);
     let np = w.normalized_power_w;
     let curve = series
@@ -675,32 +764,55 @@ pub(super) async fn activity_streams(
     Path(id): Path<i64>,
     Query(q): Query<StreamsQuery>,
 ) -> ApiResult {
-    let sport: Option<String> = sqlx::query_scalar("SELECT sport_type FROM activities WHERE id = ?")
-        .bind(id)
-        .fetch_optional(&state.pool)
-        .await?;
+    let sport: Option<String> =
+        sqlx::query_scalar("SELECT sport_type FROM activities WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&state.pool)
+            .await?;
     let Some(sport) = sport else {
-        return Err(ApiError(StatusCode::NOT_FOUND, format!("activity {id} not found")));
+        return Err(ApiError(
+            StatusCode::NOT_FOUND,
+            format!("activity {id} not found"),
+        ));
     };
     let is_run = crate::metrics::is_run(&sport);
     let Some(series) = load_series(&state.pool, id, is_run).await? else {
-        return Err(ApiError(StatusCode::NOT_FOUND, format!("activity {id} has no stream data")));
+        return Err(ApiError(
+            StatusCode::NOT_FOUND,
+            format!("activity {id} has no stream data"),
+        ));
     };
 
     let step = q.step.unwrap_or(10).clamp(1, 300);
     let from = q.from_s.unwrap_or(0);
     let to = q.to_s.unwrap_or(series.len);
     if from >= to.min(series.len) {
-        return Err(ApiError(StatusCode::BAD_REQUEST, "`from_s` must be before `to_s` and inside the activity".into()));
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            "`from_s` must be before `to_s` and inside the activity".into(),
+        ));
     }
     let d = crate::performance::downsample(&series, from, to, step);
-    let round_all = |v: &Option<Vec<f64>>, digits: i32| v.as_ref().map(|v| v.iter().map(|x| round(*x, digits)).collect::<Vec<_>>());
+    let round_all = |v: &Option<Vec<f64>>, digits: i32| {
+        v.as_ref()
+            .map(|v| v.iter().map(|x| round(*x, digits)).collect::<Vec<_>>())
+    };
 
     // Runs get pace (min/km, null while standing still) instead of speed.
     let (speed, pace) = match (&d.speed_kmh, is_run) {
         (Some(sp), true) => (
             None,
-            Some(sp.iter().map(|v| if *v > 1.0 { Some(round(60.0 / v, 2)) } else { None }).collect::<Vec<_>>()),
+            Some(
+                sp.iter()
+                    .map(|v| {
+                        if *v > 1.0 {
+                            Some(round(60.0 / v, 2))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>(),
+            ),
         ),
         (sp, _) => (round_all(&sp.clone(), 1), None),
     };

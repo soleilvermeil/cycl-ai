@@ -7,7 +7,7 @@
 //! across gaps) so every window is a plain slice and every duration means
 //! what it says, whatever the device's recording interval was.
 
-use crate::workout::{hr_zone_of, Athlete};
+use crate::workout::{Athlete, hr_zone_of};
 use serde_json::Value;
 
 /// One value per elapsed second since the activity start (index = second).
@@ -22,7 +22,12 @@ pub struct Series {
 }
 
 fn channel(v: &Value, key: &str) -> Option<Vec<f64>> {
-    v.get(key)?.get("data")?.as_array()?.iter().map(|x| x.as_f64()).collect()
+    v.get(key)?
+        .get("data")?
+        .as_array()?
+        .iter()
+        .map(|x| x.as_f64())
+        .collect()
 }
 
 /// Holds each sample's value until the next sample's timestamp.
@@ -31,7 +36,11 @@ fn resample_1hz(time: &[f64], values: &[f64], len: usize) -> Vec<f64> {
     let n = time.len().min(values.len());
     for i in 0..n {
         let start = time[i].max(0.0) as usize;
-        let end = if i + 1 < n { (time[i + 1].max(0.0) as usize).max(start + 1) } else { start + 1 };
+        let end = if i + 1 < n {
+            (time[i + 1].max(0.0) as usize).max(start + 1)
+        } else {
+            start + 1
+        };
         for slot in out.iter_mut().take(end.min(len)).skip(start) {
             *slot = values[i];
         }
@@ -82,7 +91,9 @@ fn mean(v: &[f64]) -> Option<f64> {
 }
 
 fn max(v: &[f64]) -> Option<f64> {
-    v.iter().cloned().fold(None, |m, x| Some(m.map_or(x, |m: f64| m.max(x))))
+    v.iter()
+        .cloned()
+        .fold(None, |m, x| Some(m.map_or(x, |m: f64| m.max(x))))
 }
 
 /// Normalized power: 4th-power mean of the 30 s rolling average. Needs at
@@ -137,7 +148,12 @@ pub fn window_stats(s: &Series, start_s: usize, end_s: usize, athlete: &Athlete)
     let elevation_gain_m = alt.map(|a| {
         // Sampled every 5 s: the altitude stream jitters by a metre or two
         // second to second, which would otherwise add up to phantom climbing.
-        a.iter().step_by(5).collect::<Vec<_>>().windows(2).map(|w| (w[1] - w[0]).max(0.0)).sum()
+        a.iter()
+            .step_by(5)
+            .collect::<Vec<_>>()
+            .windows(2)
+            .map(|w| (w[1] - w[0]).max(0.0))
+            .sum()
     });
     let avg_grade_pct = match (alt, distance_m) {
         (Some(a), Some(d)) if d > 50.0 => Some((a[a.len() - 1] - a[0]) / d * 100.0),
@@ -178,10 +194,19 @@ pub fn window_stats(s: &Series, start_s: usize, end_s: usize, athlete: &Athlete)
 /// Best average power for the usual benchmark durations (null when the
 /// activity is shorter than the window).
 pub fn power_curve(power: &[f64]) -> Vec<(&'static str, Option<f64>)> {
-    [("5s", 5), ("15s", 15), ("30s", 30), ("1min", 60), ("5min", 300), ("10min", 600), ("20min", 1200), ("60min", 3600)]
-        .into_iter()
-        .map(|(label, secs)| (label, best_average(power, secs)))
-        .collect()
+    [
+        ("5s", 5),
+        ("15s", 15),
+        ("30s", 30),
+        ("1min", 60),
+        ("5min", 300),
+        ("10min", 600),
+        ("20min", 1200),
+        ("60min", 3600),
+    ]
+    .into_iter()
+    .map(|(label, secs)| (label, best_average(power, secs)))
+    .collect()
 }
 
 /// Power:HR decoupling — how much the power/HR ratio drops from the first to
@@ -240,7 +265,11 @@ pub fn downsample(s: &Series, from_s: usize, to_s: usize, step_s: usize) -> Down
         avg(&s.hr, &mut out.hr_bpm);
         avg(&s.cadence, &mut out.cadence);
         avg(&s.altitude, &mut out.altitude_m);
-        if let (Some(d), Some(km), Some(sp)) = (s.distance_m.as_ref(), out.distance_km.as_mut(), out.speed_kmh.as_mut()) {
+        if let (Some(d), Some(km), Some(sp)) = (
+            s.distance_m.as_ref(),
+            out.distance_km.as_mut(),
+            out.speed_kmh.as_mut(),
+        ) {
             km.push(d[a] / 1000.0);
             let dt = (b - a) as f64;
             let prev = if a > 0 { d[a - 1] } else { d[a] };
@@ -257,7 +286,12 @@ mod tests {
     use serde_json::json;
 
     fn athlete() -> Athlete {
-        Athlete { ftp_watts: 200.0, hr_rest: 50.0, hr_max: 190.0, run_threshold_pace_s: 0.0 }
+        Athlete {
+            ftp_watts: 200.0,
+            hr_rest: 50.0,
+            hr_max: 190.0,
+            run_threshold_pace_s: 0.0,
+        }
     }
 
     /// 10 minutes at 1 Hz: first 5 min at 100 W / 120 bpm, last 5 at 300 W / 160 bpm,
@@ -265,8 +299,12 @@ mod tests {
     fn two_block_streams() -> Value {
         let n = 600;
         let time: Vec<usize> = (0..n).collect();
-        let watts: Vec<f64> = (0..n).map(|t| if t < 300 { 100.0 } else { 300.0 }).collect();
-        let hr: Vec<f64> = (0..n).map(|t| if t < 300 { 120.0 } else { 160.0 }).collect();
+        let watts: Vec<f64> = (0..n)
+            .map(|t| if t < 300 { 100.0 } else { 300.0 })
+            .collect();
+        let hr: Vec<f64> = (0..n)
+            .map(|t| if t < 300 { 120.0 } else { 160.0 })
+            .collect();
         let dist: Vec<f64> = (0..n).map(|t| t as f64 * 10.0).collect();
         let alt: Vec<f64> = (0..n).map(|t| 100.0 + t as f64 * 0.5).collect();
         json!({"time": {"data": time}, "watts": {"data": watts}, "heartrate": {"data": hr},
@@ -311,7 +349,9 @@ mod tests {
     #[test]
     fn normalized_power_weights_variability_above_the_average() {
         // Alternating 60 s at 100 W and 60 s at 300 W: avg 200, NP higher.
-        let p: Vec<f64> = (0..1200).map(|t| if (t / 60) % 2 == 0 { 100.0 } else { 300.0 }).collect();
+        let p: Vec<f64> = (0..1200)
+            .map(|t| if (t / 60) % 2 == 0 { 100.0 } else { 300.0 })
+            .collect();
         let np = normalized_power(&p).unwrap();
         assert!(np > 215.0 && np < 260.0, "got {np}");
         assert_eq!(normalized_power(&p[..10]), None);
@@ -325,8 +365,14 @@ mod tests {
         }
         assert_eq!(best_average(&p, 60), Some(400.0));
         let curve = power_curve(&p);
-        assert_eq!(curve.iter().find(|(l, _)| *l == "1min").unwrap().1, Some(400.0));
-        assert_eq!(curve.iter().find(|(l, _)| *l == "5s").unwrap().1, Some(400.0));
+        assert_eq!(
+            curve.iter().find(|(l, _)| *l == "1min").unwrap().1,
+            Some(400.0)
+        );
+        assert_eq!(
+            curve.iter().find(|(l, _)| *l == "5s").unwrap().1,
+            Some(400.0)
+        );
         // Longer than the activity: not available.
         assert_eq!(curve.iter().find(|(l, _)| *l == "20min").unwrap().1, None);
     }
@@ -336,8 +382,14 @@ mod tests {
         let n = 3600;
         let time: Vec<usize> = (0..n).collect();
         let watts = vec![200.0; n];
-        let hr: Vec<f64> = (0..n).map(|t| if t < n / 2 { 140.0 } else { 154.0 }).collect();
-        let s = Series::from_streams(&json!({"time": {"data": time}, "watts": {"data": watts}, "heartrate": {"data": hr}}), true).unwrap();
+        let hr: Vec<f64> = (0..n)
+            .map(|t| if t < n / 2 { 140.0 } else { 154.0 })
+            .collect();
+        let s = Series::from_streams(
+            &json!({"time": {"data": time}, "watts": {"data": watts}, "heartrate": {"data": hr}}),
+            true,
+        )
+        .unwrap();
         let d = decoupling_pct(&s).unwrap();
         assert!((d - (1.0 - 140.0 / 154.0) * 100.0).abs() < 0.1, "got {d}");
 

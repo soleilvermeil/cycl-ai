@@ -30,13 +30,18 @@ pub async fn analyze(mut multipart: Multipart) -> Html<String> {
         Ok(profile) => Html(render(Some((&profile, file_name.as_deref())), None)),
         Err(err) => {
             tracing::warn!(?err, "route GPX could not be analyzed");
-            Html(render(None, Some(&format!("Fichier GPX illisible : {err}"))))
+            Html(render(
+                None,
+                Some(&format!("Fichier GPX illisible : {err}")),
+            ))
         }
     }
 }
 
 fn stat(label: &str, value: String) -> String {
-    format!(r#"<div class="stat"><div class="value">{value}</div><div class="label">{label}</div></div>"#)
+    format!(
+        r#"<div class="stat"><div class="value">{value}</div><div class="label">{label}</div></div>"#
+    )
 }
 
 fn render(profile: Option<(&RouteProfile, Option<&str>)>, error: Option<&str>) -> String {
@@ -57,7 +62,10 @@ fn render(profile: Option<(&RouteProfile, Option<&str>)>, error: Option<&str>) -
             if p.has_elevation() {
                 stats += &stat("D+", format!("{:.0} m", p.ascent_m));
                 stats += &stat("D−", format!("{:.0} m", p.descent_m));
-                stats += &stat("Alt. min / max", format!("{:.0} / {:.0} m", p.min_ele_m, p.max_ele_m));
+                stats += &stat(
+                    "Alt. min / max",
+                    format!("{:.0} / {:.0} m", p.min_ele_m, p.max_ele_m),
+                );
                 stats += &stat("Pente max", format!("{:.1} %", p.max_grade_pct));
                 stats += &stat("Descente max", format!("{:.1} %", p.min_grade_pct));
             }
@@ -193,7 +201,11 @@ fn render(profile: Option<(&RouteProfile, Option<&str>)>, error: Option<&str>) -
 <p class="hint">Fichier GPX exporté d'un planificateur (trace ou itinéraire). Rien n'est enregistré.</p>
 </section>
 {result_html}"#,
-        header = super::layout::page_header("Itinéraire", "Carte, profil d'altitude et pentes d'un GPX planifié.", ""),
+        header = super::layout::page_header(
+            "Itinéraire",
+            "Carte, profil d'altitude et pentes d'un GPX planifié.",
+            ""
+        ),
     );
     let head = r#"<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>

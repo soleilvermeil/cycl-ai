@@ -4,9 +4,9 @@
 //! session keeps its own copy of the steps (see `planned`).
 
 use super::workout::{builder_form_html, fetch_athlete, page_shell, sport_select_html};
+use super::{AppState, escape_html};
 use crate::planned::Sport;
 use crate::workout::Athlete;
-use super::{escape_html, AppState};
 use axum::extract::{Form, Path, Query, State};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use serde::Deserialize;
@@ -102,7 +102,11 @@ pub async fn new_form(State(state): State<AppState>, Query(q): Query<NewQuery>) 
     };
     render_form(
         &FormView {
-            heading: if template.is_some() { "Planifier une séance (copie du modèle)" } else { "Nouvelle séance du jour" },
+            heading: if template.is_some() {
+                "Planifier une séance (copie du modèle)"
+            } else {
+                "Nouvelle séance du jour"
+            },
             action: "/planned".to_string(),
             steps_json: steps,
             date: &date,
@@ -132,9 +136,14 @@ pub struct PlannedForm {
 }
 
 /// Validates the posted form into (date, prepared workout), or an error message.
-fn read_form(form: &PlannedForm, ath: &Athlete) -> Result<(chrono::NaiveDate, crate::planned::Prepared, Sport), String> {
-    let date = crate::planned::parse_date(&form.planned_date).ok_or_else(|| "Date invalide.".to_string())?;
-    let value: Value = serde_json::from_str(&form.steps_json).map_err(|e| format!("JSON invalide : {e}"))?;
+fn read_form(
+    form: &PlannedForm,
+    ath: &Athlete,
+) -> Result<(chrono::NaiveDate, crate::planned::Prepared, Sport), String> {
+    let date = crate::planned::parse_date(&form.planned_date)
+        .ok_or_else(|| "Date invalide.".to_string())?;
+    let value: Value =
+        serde_json::from_str(&form.steps_json).map_err(|e| format!("JSON invalide : {e}"))?;
     let sport = Sport::parse(&form.sport).unwrap_or_default();
     let prepared = crate::planned::prepare(&value, ath, sport)?;
     Ok((date, prepared, sport))
@@ -167,16 +176,28 @@ pub async fn create(State(state): State<AppState>, Form(form): Form<PlannedForm>
 
     let mut template_id: Option<i64> = form.from_workout_id.parse().ok();
     if !form.save_template.is_empty() {
-        template_id = sqlx::query("INSERT INTO workouts (name, steps_json, source, sport) VALUES (?, ?, 'manual', ?)")
-            .bind(&prepared.name)
-            .bind(&prepared.steps_json)
-            .bind(sport.as_str())
-            .execute(&state.pool)
-            .await
-            .ok()
-            .map(|r| r.last_insert_rowid());
+        template_id = sqlx::query(
+            "INSERT INTO workouts (name, steps_json, source, sport) VALUES (?, ?, 'manual', ?)",
+        )
+        .bind(&prepared.name)
+        .bind(&prepared.steps_json)
+        .bind(sport.as_str())
+        .execute(&state.pool)
+        .await
+        .ok()
+        .map(|r| r.last_insert_rowid());
     }
-    if let Err(err) = crate::planned::insert(&state.pool, date, &prepared, Some(form.notes.as_str()), template_id, "manual", sport).await {
+    if let Err(err) = crate::planned::insert(
+        &state.pool,
+        date,
+        &prepared,
+        Some(form.notes.as_str()),
+        template_id,
+        "manual",
+        sport,
+    )
+    .await
+    {
         tracing::error!(?err, "failed to store planned workout");
     }
     Redirect::to("/").into_response()
@@ -185,7 +206,8 @@ pub async fn create(State(state): State<AppState>, Form(form): Form<PlannedForm>
 pub async fn edit_form(State(state): State<AppState>, Path(id): Path<i64>) -> Response {
     let ath = fetch_athlete(&state.pool).await;
     let Ok(Some(p)) = crate::planned::get(&state.pool, id).await else {
-        return Html("<p>Séance planifiée introuvable. <a href=\"/\">Retour</a></p>".to_string()).into_response();
+        return Html("<p>Séance planifiée introuvable. <a href=\"/\">Retour</a></p>".to_string())
+            .into_response();
     };
     render_form(
         &FormView {
@@ -205,11 +227,24 @@ pub async fn edit_form(State(state): State<AppState>, Path(id): Path<i64>) -> Re
     .into_response()
 }
 
-pub async fn update(State(state): State<AppState>, Path(id): Path<i64>, Form(form): Form<PlannedForm>) -> Response {
+pub async fn update(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Form(form): Form<PlannedForm>,
+) -> Response {
     let ath = fetch_athlete(&state.pool).await;
     match read_form(&form, &ath) {
         Ok((date, prepared, sport)) => {
-            if let Err(err) = crate::planned::update(&state.pool, id, date, &prepared, Some(form.notes.as_str()), sport).await {
+            if let Err(err) = crate::planned::update(
+                &state.pool,
+                id,
+                date,
+                &prepared,
+                Some(form.notes.as_str()),
+                sport,
+            )
+            .await
+            {
                 tracing::error!(?err, planned_id = id, "failed to update planned workout");
             }
             Redirect::to("/").into_response()

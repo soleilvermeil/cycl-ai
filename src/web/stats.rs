@@ -5,7 +5,7 @@
 //! `route_points_json` columns — no raw stream is parsed here.
 
 use super::format::{format_datetime_fr, format_pace_secs};
-use super::{escape_html, layout, AppState};
+use super::{AppState, escape_html, layout};
 use crate::bests::{POWER_DURATIONS, RIDE_DISTANCES, RUN_DISTANCES};
 use axum::extract::{Query, State};
 use axum::response::Html;
@@ -19,7 +19,12 @@ pub struct StatsQuery {
     period: Option<String>,
 }
 
-const PERIODS: [(&str, &str); 4] = [("all", "Tout"), ("year", "Cette année"), ("90d", "90 jours"), ("30d", "30 jours")];
+const PERIODS: [(&str, &str); 4] = [
+    ("all", "Tout"),
+    ("year", "Cette année"),
+    ("90d", "90 jours"),
+    ("30d", "30 jours"),
+];
 
 struct Act {
     id: i64,
@@ -76,12 +81,18 @@ fn distance_label(m: u32) -> String {
 }
 
 fn activity_link(b: &Best) -> String {
-    format!(r#"<a href="/activity/{}">{}</a>"#, b.activity_id, escape_html(&format_datetime_fr(&b.started_at)))
+    format!(
+        r#"<a href="/activity/{}">{}</a>"#,
+        b.activity_id,
+        escape_html(&format_datetime_fr(&b.started_at))
+    )
 }
 
 /// One row of a distance-records table: time and speed (ride) or pace (run).
 fn record_cells(b: Option<&Best>, meters: u32, run: bool) -> String {
-    let Some(b) = b else { return "<td class=\"muted\">—</td>".to_string() };
+    let Some(b) = b else {
+        return "<td class=\"muted\">—</td>".to_string();
+    };
     let km = meters as f64 / 1000.0;
     let pace_or_speed = if run {
         format!("{} /km", format_pace_secs(b.value / km))
@@ -95,22 +106,45 @@ fn record_cells(b: Option<&Best>, meters: u32, run: bool) -> String {
     )
 }
 
-fn distance_table(title: &str, targets: &[u32], run: bool, all: &BTreeMap<(bool, u32), Best>, period: &BTreeMap<(bool, u32), Best>, show_period: bool) -> String {
+fn distance_table(
+    title: &str,
+    targets: &[u32],
+    run: bool,
+    all: &BTreeMap<(bool, u32), Best>,
+    period: &BTreeMap<(bool, u32), Best>,
+    show_period: bool,
+) -> String {
     let rows: String = targets
         .iter()
         .map(|t| {
-            let period_cell = if show_period { record_cells(period.get(&(run, *t)), *t, run) } else { String::new() };
-            format!("<tr><th>{}</th>{}{period_cell}</tr>", distance_label(*t), record_cells(all.get(&(run, *t)), *t, run))
+            let period_cell = if show_period {
+                record_cells(period.get(&(run, *t)), *t, run)
+            } else {
+                String::new()
+            };
+            format!(
+                "<tr><th>{}</th>{}{period_cell}</tr>",
+                distance_label(*t),
+                record_cells(all.get(&(run, *t)), *t, run)
+            )
         })
         .collect();
-    let period_head = if show_period { "<th>Sur la période</th>" } else { "" };
+    let period_head = if show_period {
+        "<th>Sur la période</th>"
+    } else {
+        ""
+    };
     format!(
         r#"<h3>{title}</h3><div class="table-wrap"><table class="records-table"><thead><tr><th>Distance</th><th>Record</th>{period_head}</tr></thead><tbody>{rows}</tbody></table></div>"#
     )
 }
 
 pub async fn page(State(state): State<AppState>, Query(q): Query<StatsQuery>) -> Html<String> {
-    let period = q.period.as_deref().filter(|p| PERIODS.iter().any(|(k, _)| k == p)).unwrap_or("all");
+    let period = q
+        .period
+        .as_deref()
+        .filter(|p| PERIODS.iter().any(|(k, _)| k == p))
+        .unwrap_or("all");
     let since = since_for(period);
 
     let rows: Vec<(i64, String, String, f64, i64, f64, Option<String>)> = sqlx::query_as(
@@ -122,17 +156,22 @@ pub async fn page(State(state): State<AppState>, Query(q): Query<StatsQuery>) ->
     .unwrap_or_default();
     let acts: Vec<Act> = rows
         .into_iter()
-        .map(|(id, sport, started_at, distance_m, duration_s, elevation_m, points)| Act {
-            id,
-            run: crate::metrics::is_run(&sport),
-            started_at,
-            distance_m,
-            duration_s,
-            elevation_m,
-            points: points.filter(|p| !p.is_empty()),
-        })
+        .map(
+            |(id, sport, started_at, distance_m, duration_s, elevation_m, points)| Act {
+                id,
+                run: crate::metrics::is_run(&sport),
+                started_at,
+                distance_m,
+                duration_s,
+                elevation_m,
+                points: points.filter(|p| !p.is_empty()),
+            },
+        )
         .collect();
-    let in_period: Vec<&Act> = acts.iter().filter(|a| a.started_at.as_str() >= since.as_str()).collect();
+    let in_period: Vec<&Act> = acts
+        .iter()
+        .filter(|a| a.started_at.as_str() >= since.as_str())
+        .collect();
 
     // ---- totals -------------------------------------------------------
     let (mut ride_m, mut run_m, mut secs, mut elev) = (0.0, 0.0, 0i64, 0.0);
@@ -145,18 +184,33 @@ pub async fn page(State(state): State<AppState>, Query(q): Query<StatsQuery>) ->
         }
         secs += a.duration_s;
         elev += a.elevation_m;
-        let m = months.entry(a.started_at.chars().take(7).collect()).or_default();
+        let m = months
+            .entry(a.started_at.chars().take(7).collect())
+            .or_default();
         if a.run {
             m.1 += a.distance_m / 1000.0;
         } else {
             m.0 += a.distance_m / 1000.0;
         }
     }
-    let tile = |value: String, label: &str| format!(r#"<div class="stat"><div class="value">{value}</div><div class="label">{label}</div></div>"#);
+    let tile = |value: String, label: &str| {
+        format!(
+            r#"<div class="stat"><div class="value">{value}</div><div class="label">{label}</div></div>"#
+        )
+    };
     let tiles = [
-        tile(format!("{} km", group_thousands((ride_m + run_m) / 1000.0)), "Distance totale"),
-        tile(format!("{} km", group_thousands(ride_m / 1000.0)), "🚴 À vélo"),
-        tile(format!("{} km", group_thousands(run_m / 1000.0)), "🏃 À pied"),
+        tile(
+            format!("{} km", group_thousands((ride_m + run_m) / 1000.0)),
+            "Distance totale",
+        ),
+        tile(
+            format!("{} km", group_thousands(ride_m / 1000.0)),
+            "🚴 À vélo",
+        ),
+        tile(
+            format!("{} km", group_thousands(run_m / 1000.0)),
+            "🏃 À pied",
+        ),
         tile(format_hours(secs), "Temps d'activité"),
         tile(format!("{} m", group_thousands(elev)), "Dénivelé positif"),
         tile(in_period.len().to_string(), "Sorties"),
@@ -187,7 +241,9 @@ pub async fn page(State(state): State<AppState>, Query(q): Query<StatsQuery>) ->
     let highlights = [
         highlight("🚴 Plus longue sortie vélo", longest_ride.as_ref(), &km_fmt),
         highlight("🏃 Plus longue course", longest_run.as_ref(), &km_fmt),
-        highlight("⛰ Plus gros dénivelé", most_climb.as_ref(), &|a| format!("{} m", group_thousands(a.elevation_m))),
+        highlight("⛰ Plus gros dénivelé", most_climb.as_ref(), &|a| {
+            format!("{} m", group_thousands(a.elevation_m))
+        }),
     ]
     .concat();
 
@@ -204,7 +260,11 @@ pub async fn page(State(state): State<AppState>, Query(q): Query<StatsQuery>) ->
     let mut dist_all: BTreeMap<(bool, u32), Best> = BTreeMap::new();
     let mut dist_period: BTreeMap<(bool, u32), Best> = BTreeMap::new();
     for (activity_id, kind, key, value, started_at, sport) in bests {
-        let best = Best { value, activity_id, started_at };
+        let best = Best {
+            value,
+            activity_id,
+            started_at,
+        };
         let is_period = best.started_at.as_str() >= since.as_str();
         if kind == "power" {
             let (a, p) = (&mut power_all, &mut power_period);
@@ -226,26 +286,59 @@ pub async fn page(State(state): State<AppState>, Query(q): Query<StatsQuery>) ->
     let show_period = period != "all";
     let mut records_html = String::new();
     if dist_all.keys().any(|(run, _)| !run) {
-        records_html += &distance_table("🚴 Meilleures vitesses moyennes", &RIDE_DISTANCES, false, &dist_all, &dist_period, show_period);
+        records_html += &distance_table(
+            "🚴 Meilleures vitesses moyennes",
+            &RIDE_DISTANCES,
+            false,
+            &dist_all,
+            &dist_period,
+            show_period,
+        );
     }
     if dist_all.keys().any(|(run, _)| *run) {
-        records_html += &distance_table("🏃 Meilleures allures", &RUN_DISTANCES, true, &dist_all, &dist_period, show_period);
+        records_html += &distance_table(
+            "🏃 Meilleures allures",
+            &RUN_DISTANCES,
+            true,
+            &dist_all,
+            &dist_period,
+            show_period,
+        );
     }
     if records_html.is_empty() {
         records_html = r#"<p class="hint">Pas encore de records : ils sont calculés à partir des flux de distance de chaque sortie.</p>"#.to_string();
     }
 
     // ---- radar --------------------------------------------------------
-    let duration_label = |s: usize| if s < 60 { format!("{s} s") } else { format!("{} min", s / 60) };
+    let duration_label = |s: usize| {
+        if s < 60 {
+            format!("{s} s")
+        } else {
+            format!("{} min", s / 60)
+        }
+    };
     let radar_labels: Vec<String> = POWER_DURATIONS.iter().map(|d| duration_label(*d)).collect();
     let series = |m: &BTreeMap<i64, Best>| -> Vec<serde_json::Value> {
-        POWER_DURATIONS.iter().map(|d| m.get(&(*d as i64)).map_or(serde_json::Value::Null, |b| json!(b.value.round()))).collect()
+        POWER_DURATIONS
+            .iter()
+            .map(|d| {
+                m.get(&(*d as i64))
+                    .map_or(serde_json::Value::Null, |b| json!(b.value.round()))
+            })
+            .collect()
     };
     let has_power = !power_all.is_empty();
     let power_chips: String = POWER_DURATIONS
         .iter()
         .filter_map(|d| power_all.get(&(*d as i64)).map(|b| (*d, b)))
-        .map(|(d, b)| format!(r#"<span class="chip" title="{}">{} <strong>{:.0} W</strong></span>"#, escape_html(&format_datetime_fr(&b.started_at)), duration_label(d), b.value))
+        .map(|(d, b)| {
+            format!(
+                r#"<span class="chip" title="{}">{} <strong>{:.0} W</strong></span>"#,
+                escape_html(&format_datetime_fr(&b.started_at)),
+                duration_label(d),
+                b.value
+            )
+        })
         .collect();
 
     // ---- map + chart data ---------------------------------------------
@@ -280,12 +373,24 @@ pub async fn page(State(state): State<AppState>, Query(q): Query<StatsQuery>) ->
 
     let tabs: String = PERIODS
         .iter()
-        .map(|(k, label)| format!(r#"<a href="/stats?period={k}"{}>{label}</a>"#, if *k == period { r#" class="active""# } else { "" }))
+        .map(|(k, label)| {
+            format!(
+                r#"<a href="/stats?period={k}"{}>{label}</a>"#,
+                if *k == period {
+                    r#" class="active""#
+                } else {
+                    ""
+                }
+            )
+        })
         .collect();
     let map_section = if routes.is_empty() {
         r#"<p class="hint">Aucune trace GPS sur cette période.</p>"#.to_string()
     } else {
-        format!(r#"<p class="hint">{} traces — survole pour mettre en avant, clique pour ouvrir la sortie. <span class="legend-dot" style="background:var(--accent)"></span> vélo <span class="legend-dot" style="background:#0d9488"></span> course</p><div id="stats-map" class="stats-map"></div>"#, routes.len())
+        format!(
+            r#"<p class="hint">{} traces — survole pour mettre en avant, clique pour ouvrir la sortie. <span class="legend-dot" style="background:var(--accent)"></span> vélo <span class="legend-dot" style="background:#0d9488"></span> course</p><div id="stats-map" class="stats-map"></div>"#,
+            routes.len()
+        )
     };
     let radar_section = if has_power {
         format!(
@@ -308,14 +413,24 @@ pub async fn page(State(state): State<AppState>, Query(q): Query<StatsQuery>) ->
 <section><h2>🏁 Records sur distance</h2>{records_html}</section>
 </div>
 <script>{script}</script>"#,
-        header = layout::page_header("Statistiques", "Distance, traces et records de toutes tes sorties.", &format!(r#"<div class="period-tabs">{tabs}</div>"#)),
+        header = layout::page_header(
+            "Statistiques",
+            "Distance, traces et records de toutes tes sorties.",
+            &format!(r#"<div class="period-tabs">{tabs}</div>"#)
+        ),
         script = STATS_JS.replace("__DATA__", &data),
     );
 
     let head = r#"<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>"#;
-    Html(layout::Page::new("Statistiques", layout::Nav::Stats, &body).class("wide").head(head).css(STATS_CSS).render())
+    Html(
+        layout::Page::new("Statistiques", layout::Nav::Stats, &body)
+            .class("wide")
+            .head(head)
+            .css(STATS_CSS)
+            .render(),
+    )
 }
 
 const STATS_CSS: &str = r#"

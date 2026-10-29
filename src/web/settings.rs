@@ -1,4 +1,4 @@
-use super::{escape_html, AppState};
+use super::{AppState, escape_html};
 use axum::extract::State;
 use axum::response::{Html, Redirect};
 use serde::Deserialize;
@@ -18,7 +18,11 @@ const THEME_PRESETS: [(&str, &str); 9] = [
 ];
 
 fn page_shell(body: &str) -> String {
-    let header = super::layout::page_header("Paramètres", "Clés, profil physiologique, profil cycliste et prompts du LLM.", "");
+    let header = super::layout::page_header(
+        "Paramètres",
+        "Clés, profil physiologique, profil cycliste et prompts du LLM.",
+        "",
+    );
     let content = format!("{header}{body}");
     super::layout::Page::new("Paramètres", super::layout::Nav::Settings, &content)
         .class("narrow")
@@ -41,13 +45,14 @@ async fn render_page(pool: &sqlx::SqlitePool, error: Option<&str>) -> Html<Strin
             return Html(page_shell("<p>Impossible de charger les paramètres.</p>"));
         }
     };
-    let strava_refresh_token: Option<String> =
-        sqlx::query_scalar::<_, Option<String>>("SELECT strava_refresh_token FROM sync_state WHERE id = 1")
-            .fetch_optional(pool)
-            .await
-            .ok()
-            .flatten()
-            .flatten();
+    let strava_refresh_token: Option<String> = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT strava_refresh_token FROM sync_state WHERE id = 1",
+    )
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()
+    .flatten();
 
     let (ftp_watts, hr_max, hr_rest, lthr, hr_tss_coef, run_pace_s): (i64, i64, i64, i64, f64, i64) = sqlx::query_as(
         "SELECT ftp_watts, hr_max, hr_rest, lthr, hr_tss_coef, run_threshold_pace_s FROM athlete_config WHERE id = 1",
@@ -55,7 +60,11 @@ async fn render_page(pool: &sqlx::SqlitePool, error: Option<&str>) -> Html<Strin
     .fetch_one(pool)
     .await
     .unwrap_or((0, 0, 0, 0, 1.0, 0));
-    let run_pace = if run_pace_s > 0 { super::format::format_pace_secs(run_pace_s as f64) } else { String::new() };
+    let run_pace = if run_pace_s > 0 {
+        super::format::format_pace_secs(run_pace_s as f64)
+    } else {
+        String::new()
+    };
 
     let error_html = error
         .map(|e| format!(r#"<p class="form-error">{}</p>"#, escape_html(e)))
@@ -109,10 +118,24 @@ document.querySelectorAll('.swatch').forEach(function(b) {{
   <input type="password" autocomplete="off" name="strava_refresh_token" value="{strava_refresh_token}">
   </label>
   <p class="hint">Renouvelé automatiquement par Strava à chaque synchronisation — à renseigner manuellement seulement pour une première configuration ou après révocation.</p>
+  <label>Fournisseur du LLM
+  <select name="llm_provider">
+    <option value="anthropic"{anthropic_selected}>Anthropic (Claude)</option>
+    <option value="openai"{openai_selected}>OpenAI</option>
+  </select>
+  </label>
+  <p class="hint">Un seul fournisseur est appelé pour les bilans et le digest. L'autre clé reste enregistrée.</p>
   <label>Clé API Anthropic
   <input type="password" autocomplete="off" name="anthropic_api_key" value="{anthropic_api_key}">
   </label>
-  <p class="hint">Optionnelle : sans clé, les bilans/digests ne sont pas générés automatiquement, mais un « rapport IA » est téléchargeable depuis le dashboard et les pages d'activité pour le coller dans Claude, ChatGPT…</p>
+  <p class="hint">Modèle fixe : Claude. Sans clé pour le fournisseur choisi, un « rapport IA » est téléchargeable depuis le dashboard et les pages d'activité.</p>
+  <label>Clé API OpenAI
+  <input type="password" autocomplete="off" name="openai_api_key" value="{openai_api_key}">
+  </label>
+  <label>Modèle OpenAI
+  <select name="openai_model">{openai_models}</select>
+  </label>
+  <p class="hint">Utilisés seulement quand OpenAI est le fournisseur. Sol équilibre coût et qualité ; Luna est le moins cher, Astra le plus capable.</p>
   <button type="submit">Enregistrer</button>
 </form>
 </section>
@@ -199,7 +222,17 @@ document.querySelectorAll('.swatch').forEach(function(b) {{
         strava_client_id = escape_html(&settings.strava_client_id),
         strava_client_secret = escape_html(&settings.strava_client_secret),
         strava_refresh_token = escape_html(strava_refresh_token.as_deref().unwrap_or("")),
+        anthropic_selected = if settings.llm_provider == "openai" { "" } else { " selected" },
+        openai_selected = if settings.llm_provider == "openai" { " selected" } else { "" },
         anthropic_api_key = escape_html(&settings.anthropic_api_key),
+        openai_api_key = escape_html(&settings.openai_api_key),
+        openai_models = crate::llm::OPENAI_MODELS
+            .iter()
+            .map(|(id, label)| format!(
+                r#"<option value="{id}"{}>{label}</option>"#,
+                if *id == crate::llm::openai_model_or_default(&settings.openai_model) { " selected" } else { "" }
+            ))
+            .collect::<String>(),
         athlete_profile = escape_html(&settings.athlete_profile),
         bilan_system_prompt = escape_html(&settings.bilan_system_prompt),
         digest_system_prompt = escape_html(&settings.digest_system_prompt),
@@ -223,20 +256,42 @@ pub struct KeysForm {
     #[serde(default)]
     anthropic_api_key: String,
     #[serde(default)]
+    openai_api_key: String,
+    #[serde(default)]
+    llm_provider: String,
+    #[serde(default)]
+    openai_model: String,
+    #[serde(default)]
     garmin_api_key: String,
     #[serde(default)]
     sync_source: String,
 }
 
-pub async fn update_keys(State(state): State<AppState>, axum::extract::Form(form): axum::extract::Form<KeysForm>) -> Redirect {
-    let sync_source = if form.sync_source == "garmin" { "garmin" } else { "strava" };
+pub async fn update_keys(
+    State(state): State<AppState>,
+    axum::extract::Form(form): axum::extract::Form<KeysForm>,
+) -> Redirect {
+    let sync_source = if form.sync_source == "garmin" {
+        "garmin"
+    } else {
+        "strava"
+    };
+    let llm_provider = if form.llm_provider == "openai" {
+        "openai"
+    } else {
+        "anthropic"
+    };
     let _ = sqlx::query(
         "UPDATE settings SET strava_client_id = ?, strava_client_secret = ?, anthropic_api_key = ?, \
-         garmin_api_key = ?, sync_source = ? WHERE id = 1",
+         openai_api_key = ?, llm_provider = ?, openai_model = ?, garmin_api_key = ?, sync_source = ? \
+         WHERE id = 1",
     )
     .bind(form.strava_client_id.trim())
     .bind(form.strava_client_secret.trim())
     .bind(form.anthropic_api_key.trim())
+    .bind(form.openai_api_key.trim())
+    .bind(llm_provider)
+    .bind(crate::llm::openai_model_or_default(&form.openai_model))
     .bind(form.garmin_api_key.trim())
     .bind(sync_source)
     .execute(&state.pool)
@@ -311,14 +366,31 @@ pub struct AppearanceForm {
     reset: String,
 }
 
-pub async fn update_appearance(State(state): State<AppState>, axum::extract::Form(form): axum::extract::Form<AppearanceForm>) -> Redirect {
+pub async fn update_appearance(
+    State(state): State<AppState>,
+    axum::extract::Form(form): axum::extract::Form<AppearanceForm>,
+) -> Redirect {
     let (color, mode) = if !form.reset.is_empty() {
-        (super::layout::DEFAULT_ACCENT.to_string(), "auto".to_string())
+        (
+            super::layout::DEFAULT_ACCENT.to_string(),
+            "auto".to_string(),
+        )
     } else {
         let color = form.theme_color.trim().to_lowercase();
         (
-            if super::layout::valid_color(&color) { color } else { super::layout::DEFAULT_ACCENT.to_string() },
-            if super::layout::MODES.iter().any(|(m, _)| *m == form.theme_mode) { form.theme_mode } else { "auto".to_string() },
+            if super::layout::valid_color(&color) {
+                color
+            } else {
+                super::layout::DEFAULT_ACCENT.to_string()
+            },
+            if super::layout::MODES
+                .iter()
+                .any(|(m, _)| *m == form.theme_mode)
+            {
+                form.theme_mode
+            } else {
+                "auto".to_string()
+            },
         )
     };
     let _ = sqlx::query("UPDATE settings SET theme_color = ?, theme_mode = ? WHERE id = 1")
@@ -336,7 +408,10 @@ pub struct ProfileForm {
     athlete_profile: String,
 }
 
-pub async fn update_profile(State(state): State<AppState>, axum::extract::Form(form): axum::extract::Form<ProfileForm>) -> Redirect {
+pub async fn update_profile(
+    State(state): State<AppState>,
+    axum::extract::Form(form): axum::extract::Form<ProfileForm>,
+) -> Redirect {
     let _ = sqlx::query("UPDATE settings SET athlete_profile = ? WHERE id = 1")
         .bind(&form.athlete_profile)
         .execute(&state.pool)
@@ -349,7 +424,10 @@ pub struct PromptForm {
     system_prompt: String,
 }
 
-pub async fn update_bilan_prompt(State(state): State<AppState>, axum::extract::Form(form): axum::extract::Form<PromptForm>) -> Redirect {
+pub async fn update_bilan_prompt(
+    State(state): State<AppState>,
+    axum::extract::Form(form): axum::extract::Form<PromptForm>,
+) -> Redirect {
     let _ = sqlx::query("UPDATE settings SET bilan_system_prompt = ? WHERE id = 1")
         .bind(&form.system_prompt)
         .execute(&state.pool)
@@ -357,7 +435,10 @@ pub async fn update_bilan_prompt(State(state): State<AppState>, axum::extract::F
     Redirect::to("/settings")
 }
 
-pub async fn update_digest_prompt(State(state): State<AppState>, axum::extract::Form(form): axum::extract::Form<PromptForm>) -> Redirect {
+pub async fn update_digest_prompt(
+    State(state): State<AppState>,
+    axum::extract::Form(form): axum::extract::Form<PromptForm>,
+) -> Redirect {
     let _ = sqlx::query("UPDATE settings SET digest_system_prompt = ? WHERE id = 1")
         .bind(&form.system_prompt)
         .execute(&state.pool)

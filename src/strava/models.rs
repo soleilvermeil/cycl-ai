@@ -20,8 +20,8 @@ pub struct SummaryActivity {
     /// conflates gravel/MTB rides under "Ride" too, so this is the field
     /// to filter on for "road cycling only".
     pub sport_type: String,
-    pub moving_time: i64,   // seconds
-    pub distance: f64,      // meters
+    pub moving_time: i64, // seconds
+    pub distance: f64,    // meters
     pub total_elevation_gain: f64,
     pub average_watts: Option<f64>,
     /// Only meaningful when `device_watts` is true (real power meter, not estimated).

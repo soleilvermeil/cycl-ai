@@ -3,7 +3,7 @@
 //! once from the raw streams (at sync / import) into `activity_bests`, so
 //! the page never parses streams.
 
-use crate::performance::{best_average, Series};
+use crate::performance::{Series, best_average};
 use serde_json::Value;
 use sqlx::SqlitePool;
 
@@ -56,7 +56,11 @@ pub fn compute(streams: &Value, is_run: bool) -> Vec<(&'static str, i64, f64)> {
         }
     }
     if let Some(dist) = &series.distance_m {
-        let targets: &[u32] = if is_run { &RUN_DISTANCES } else { &RIDE_DISTANCES };
+        let targets: &[u32] = if is_run {
+            &RUN_DISTANCES
+        } else {
+            &RIDE_DISTANCES
+        };
         for t in targets {
             if let Some(secs) = best_time_for_distance(dist, *t as f64) {
                 rows.push(("dist", *t as i64, secs));
@@ -66,16 +70,26 @@ pub fn compute(streams: &Value, is_run: bool) -> Vec<(&'static str, i64, f64)> {
     rows
 }
 
-pub async fn store(pool: &SqlitePool, activity_id: i64, is_run: bool, streams: &Value) -> anyhow::Result<()> {
-    sqlx::query("DELETE FROM activity_bests WHERE activity_id = ?").bind(activity_id).execute(pool).await?;
+pub async fn store(
+    pool: &SqlitePool,
+    activity_id: i64,
+    is_run: bool,
+    streams: &Value,
+) -> anyhow::Result<()> {
+    sqlx::query("DELETE FROM activity_bests WHERE activity_id = ?")
+        .bind(activity_id)
+        .execute(pool)
+        .await?;
     for (kind, key, value) in compute(streams, is_run) {
-        sqlx::query("INSERT INTO activity_bests (activity_id, kind, key, value) VALUES (?, ?, ?, ?)")
-            .bind(activity_id)
-            .bind(kind)
-            .bind(key)
-            .bind(value)
-            .execute(pool)
-            .await?;
+        sqlx::query(
+            "INSERT INTO activity_bests (activity_id, kind, key, value) VALUES (?, ?, ?, ?)",
+        )
+        .bind(activity_id)
+        .bind(kind)
+        .bind(key)
+        .bind(value)
+        .execute(pool)
+        .await?;
     }
     Ok(())
 }
@@ -103,7 +117,9 @@ mod tests {
     fn compute_returns_power_and_distance_rows() {
         let n = 400usize;
         let time: Vec<f64> = (0..n).map(|s| s as f64).collect();
-        let watts: Vec<f64> = (0..n).map(|s| if s < 100 { 300.0 } else { 150.0 }).collect();
+        let watts: Vec<f64> = (0..n)
+            .map(|s| if s < 100 { 300.0 } else { 150.0 })
+            .collect();
         let dist: Vec<f64> = (0..n).map(|s| s as f64 * 8.0).collect();
         let streams = serde_json::json!({
             "time": {"data": time}, "watts": {"data": watts}, "distance": {"data": dist},

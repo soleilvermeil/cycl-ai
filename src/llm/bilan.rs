@@ -77,7 +77,10 @@ struct ActivityRow {
     description: Option<String>,
 }
 
-async fn fetch_activity_deltas(pool: &SqlitePool, activity_id: i64) -> anyhow::Result<ActivityDeltas> {
+async fn fetch_activity_deltas(
+    pool: &SqlitePool,
+    activity_id: i64,
+) -> anyhow::Result<ActivityDeltas> {
     let (ftp_watts,): (i64,) = sqlx::query_as("SELECT ftp_watts FROM athlete_config WHERE id = 1")
         .fetch_one(pool)
         .await?;
@@ -126,18 +129,34 @@ async fn fetch_activity_deltas(pool: &SqlitePool, activity_id: i64) -> anyhow::R
         avg_hr: row.avg_hr,
         tss: row.tss,
         intensity_factor: row.intensity_factor,
-        zone_secs: [row.zone1_s, row.zone2_s, row.zone3_s, row.zone4_s, row.zone5_s, row.zone6_s, row.zone7_s],
+        zone_secs: [
+            row.zone1_s,
+            row.zone2_s,
+            row.zone3_s,
+            row.zone4_s,
+            row.zone5_s,
+            row.zone6_s,
+            row.zone7_s,
+        ],
         segment_efforts: segment_efforts
             .into_iter()
-            .map(|(name, avg_power_w, delta_vs_pr_pct, delta_vs_recent_avg_pct, delta_vs_last_pct)| {
-                SegmentEffortRow {
+            .map(
+                |(
                     name,
                     avg_power_w,
                     delta_vs_pr_pct,
                     delta_vs_recent_avg_pct,
                     delta_vs_last_pct,
-                }
-            })
+                )| {
+                    SegmentEffortRow {
+                        name,
+                        avg_power_w,
+                        delta_vs_pr_pct,
+                        delta_vs_recent_avg_pct,
+                        delta_vs_last_pct,
+                    }
+                },
+            )
             .collect(),
         laps: laps
             .into_iter()
@@ -162,9 +181,10 @@ fn format_deltas(d: &ActivityDeltas) -> String {
     };
     let mut out = if d.is_run {
         // No power, no FTP-relative metrics for runs: pace and HR only.
-        let pace = crate::web::format::format_pace(d.distance_km * 1000.0, (d.duration_min * 60.0) as i64)
-            .map(|p| format!(", allure moyenne {p}/km"))
-            .unwrap_or_default();
+        let pace =
+            crate::web::format::format_pace(d.distance_km * 1000.0, (d.duration_min * 60.0) as i64)
+                .map(|p| format!(", allure moyenne {p}/km"))
+                .unwrap_or_default();
         format!(
             "Course à pied: {:.1}km, {:.0}min, {:.0}m D+ ({dplus_per_km:.0}m/km){pace}\n",
             d.distance_km, d.duration_min, d.elevation_gain_m
@@ -262,7 +282,10 @@ fn build_user_message(d: &ActivityDeltas, profile: &str) -> String {
         out += &format!("\nTitre Strava de la sortie: \"{title}\"\n");
     }
     if let Some(desc) = d.description.as_deref().filter(|c| !c.trim().is_empty()) {
-        out += &format!("\nDescription Strava écrite par le cycliste:\n{}\n", desc.trim());
+        out += &format!(
+            "\nDescription Strava écrite par le cycliste:\n{}\n",
+            desc.trim()
+        );
     }
     if let Some(ctx) = d.user_context.as_deref().filter(|c| !c.trim().is_empty()) {
         out += &format!(
@@ -276,7 +299,11 @@ fn build_user_message(d: &ActivityDeltas, profile: &str) -> String {
 /// The user message the LLM receives for one activity (profile + deltas +
 /// Strava title/description + user context). Used by the downloadable
 /// no-API report so a chat assistant is fed exactly what the API would be.
-pub async fn build_activity_message(pool: &SqlitePool, activity_id: i64, profile: &str) -> anyhow::Result<String> {
+pub async fn build_activity_message(
+    pool: &SqlitePool,
+    activity_id: i64,
+    profile: &str,
+) -> anyhow::Result<String> {
     let deltas = fetch_activity_deltas(pool, activity_id).await?;
     Ok(build_user_message(&deltas, profile))
 }
@@ -345,10 +372,12 @@ mod tests {
     #[tokio::test]
     async fn generates_and_stores_bilan_with_deltas_in_prompt() {
         let pool = test_pool().await;
-        sqlx::query("INSERT INTO athlete_config (id, ftp_watts, hr_max, hr_rest) VALUES (1, 205, 192, 53)")
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO athlete_config (id, ftp_watts, hr_max, hr_rest) VALUES (1, 205, 192, 53)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         sqlx::query(
             "INSERT INTO activities \
              (id, started_at, duration_s, distance_m, elevation_gain_m, avg_power_w, normalized_power_w, avg_hr, tss, intensity_factor, zone1_s, zone2_s) \
@@ -377,7 +406,9 @@ mod tests {
             response: "Bon effort.".to_string(),
         };
 
-        generate_activity_bilans(&pool, &client, &[1], TEST_PROFILE, DEFAULT_SYSTEM_PROMPT).await.unwrap();
+        generate_activity_bilans(&pool, &client, &[1], TEST_PROFILE, DEFAULT_SYSTEM_PROMPT)
+            .await
+            .unwrap();
 
         let (stored_text,): (String,) =
             sqlx::query_as("SELECT text FROM activity_bilans WHERE activity_id = 1")
@@ -399,10 +430,12 @@ mod tests {
     #[tokio::test]
     async fn includes_strava_title_and_description_when_present() {
         let pool = test_pool().await;
-        sqlx::query("INSERT INTO athlete_config (id, ftp_watts, hr_max, hr_rest) VALUES (1, 205, 192, 53)")
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO athlete_config (id, ftp_watts, hr_max, hr_rest) VALUES (1, 205, 192, 53)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         sqlx::query(
             "INSERT INTO activities (id, started_at, duration_s, distance_m, elevation_gain_m, title, description) \
              VALUES (1, '2026-08-19T10:00:00Z', 1200, 10000, 50, 'Sortie difficile, jambes lourdes', 'Grosse chaleur aujourd''hui, 34°C')",
@@ -411,8 +444,13 @@ mod tests {
         .await
         .unwrap();
 
-        let client = FakeClient { calls: Mutex::new(Vec::new()), response: "ok".to_string() };
-        generate_activity_bilans(&pool, &client, &[1], TEST_PROFILE, DEFAULT_SYSTEM_PROMPT).await.unwrap();
+        let client = FakeClient {
+            calls: Mutex::new(Vec::new()),
+            response: "ok".to_string(),
+        };
+        generate_activity_bilans(&pool, &client, &[1], TEST_PROFILE, DEFAULT_SYSTEM_PROMPT)
+            .await
+            .unwrap();
         let msg = &client.calls.lock().unwrap()[0].1;
         assert!(msg.contains("Titre Strava de la sortie: \"Sortie difficile, jambes lourdes\""));
         assert!(msg.contains("Grosse chaleur aujourd'hui, 34°C"));
@@ -421,10 +459,12 @@ mod tests {
     #[tokio::test]
     async fn regeneration_includes_user_context_and_replaces_previous_bilan() {
         let pool = test_pool().await;
-        sqlx::query("INSERT INTO athlete_config (id, ftp_watts, hr_max, hr_rest) VALUES (1, 205, 192, 53)")
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO athlete_config (id, ftp_watts, hr_max, hr_rest) VALUES (1, 205, 192, 53)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         sqlx::query(
             "INSERT INTO activities (id, started_at, duration_s, distance_m, elevation_gain_m) \
              VALUES (1, '2026-08-19T10:00:00Z', 1200, 10000, 50)",
@@ -433,9 +473,18 @@ mod tests {
         .await
         .unwrap();
 
-        let client = FakeClient { calls: Mutex::new(Vec::new()), response: "Premier bilan.".to_string() };
-        generate_activity_bilans(&pool, &client, &[1], TEST_PROFILE, DEFAULT_SYSTEM_PROMPT).await.unwrap();
-        assert!(!client.calls.lock().unwrap()[0].1.contains("Contexte additionnel"));
+        let client = FakeClient {
+            calls: Mutex::new(Vec::new()),
+            response: "Premier bilan.".to_string(),
+        };
+        generate_activity_bilans(&pool, &client, &[1], TEST_PROFILE, DEFAULT_SYSTEM_PROMPT)
+            .await
+            .unwrap();
+        assert!(
+            !client.calls.lock().unwrap()[0]
+                .1
+                .contains("Contexte additionnel")
+        );
 
         sqlx::query("UPDATE activities SET user_context = ? WHERE id = 1")
             .bind("j'étais malade, grosse fatigue avant le départ")
@@ -443,16 +492,30 @@ mod tests {
             .await
             .unwrap();
 
-        let client2 = FakeClient { calls: Mutex::new(Vec::new()), response: "Bilan tenant compte de la maladie.".to_string() };
-        generate_activity_bilans(&pool, &client2, &[1], TEST_PROFILE, DEFAULT_SYSTEM_PROMPT).await.unwrap();
-        assert!(client2.calls.lock().unwrap()[0].1.contains("Contexte additionnel"));
-        assert!(client2.calls.lock().unwrap()[0].1.contains("j'étais malade"));
-
-        // Regeneration replaces the old bilan rather than adding a second row.
-        let rows: Vec<(String,)> = sqlx::query_as("SELECT text FROM activity_bilans WHERE activity_id = 1")
-            .fetch_all(&pool)
+        let client2 = FakeClient {
+            calls: Mutex::new(Vec::new()),
+            response: "Bilan tenant compte de la maladie.".to_string(),
+        };
+        generate_activity_bilans(&pool, &client2, &[1], TEST_PROFILE, DEFAULT_SYSTEM_PROMPT)
             .await
             .unwrap();
+        assert!(
+            client2.calls.lock().unwrap()[0]
+                .1
+                .contains("Contexte additionnel")
+        );
+        assert!(
+            client2.calls.lock().unwrap()[0]
+                .1
+                .contains("j'étais malade")
+        );
+
+        // Regeneration replaces the old bilan rather than adding a second row.
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT text FROM activity_bilans WHERE activity_id = 1")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].0, "Bilan tenant compte de la maladie.");
     }
@@ -460,10 +523,12 @@ mod tests {
     #[tokio::test]
     async fn includes_lap_breakdown_only_when_multiple_laps() {
         let pool = test_pool().await;
-        sqlx::query("INSERT INTO athlete_config (id, ftp_watts, hr_max, hr_rest) VALUES (1, 205, 192, 53)")
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO athlete_config (id, ftp_watts, hr_max, hr_rest) VALUES (1, 205, 192, 53)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         sqlx::query(
             "INSERT INTO activities (id, started_at, duration_s, distance_m, elevation_gain_m) \
              VALUES (1, '2026-08-19T10:00:00Z', 1200, 10000, 50)",
@@ -477,8 +542,13 @@ mod tests {
             .await
             .unwrap();
 
-        let client = FakeClient { calls: Mutex::new(Vec::new()), response: "ok".to_string() };
-        generate_activity_bilans(&pool, &client, &[1], TEST_PROFILE, DEFAULT_SYSTEM_PROMPT).await.unwrap();
+        let client = FakeClient {
+            calls: Mutex::new(Vec::new()),
+            response: "ok".to_string(),
+        };
+        generate_activity_bilans(&pool, &client, &[1], TEST_PROFILE, DEFAULT_SYSTEM_PROMPT)
+            .await
+            .unwrap();
         assert!(!client.calls.lock().unwrap()[0].1.contains("Laps"));
 
         // Now add a real structured breakdown (3 laps).
@@ -496,8 +566,13 @@ mod tests {
         sqlx::query("INSERT INTO laps (activity_id, lap_index, elapsed_time_s, distance_m, avg_power_w, avg_hr) VALUES (2, 3, 300, 2500, 180, 158)")
             .execute(&pool).await.unwrap();
 
-        let client2 = FakeClient { calls: Mutex::new(Vec::new()), response: "ok".to_string() };
-        generate_activity_bilans(&pool, &client2, &[2], TEST_PROFILE, DEFAULT_SYSTEM_PROMPT).await.unwrap();
+        let client2 = FakeClient {
+            calls: Mutex::new(Vec::new()),
+            response: "ok".to_string(),
+        };
+        generate_activity_bilans(&pool, &client2, &[2], TEST_PROFILE, DEFAULT_SYSTEM_PROMPT)
+            .await
+            .unwrap();
         let msg = &client2.calls.lock().unwrap()[0].1;
         assert!(msg.contains("Laps"));
         assert!(msg.contains("Lap 1: 0:05:00, 210W, 150bpm"));

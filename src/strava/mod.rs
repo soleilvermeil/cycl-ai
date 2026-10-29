@@ -1,7 +1,7 @@
 mod models;
 
-pub use models::{Lap, StarredSegment, SummaryActivity};
 use models::{DetailedActivity, TokenResponse};
+pub use models::{Lap, StarredSegment, SummaryActivity};
 
 const OAUTH_URL: &str = "https://www.strava.com/oauth/token";
 const API_BASE: &str = "https://www.strava.com/api/v3";
@@ -115,7 +115,10 @@ impl StravaClient {
     /// Fetches the athlete-written free-text description for an activity —
     /// not part of the summary list, so this costs one extra API call per
     /// newly-synced activity.
-    pub async fn get_activity_description(&self, activity_id: i64) -> anyhow::Result<Option<String>> {
+    pub async fn get_activity_description(
+        &self,
+        activity_id: i64,
+    ) -> anyhow::Result<Option<String>> {
         let detail: DetailedActivity = self
             .http
             .get(format!("{API_BASE}/activities/{activity_id}"))

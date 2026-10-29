@@ -90,7 +90,11 @@ enum ApiKeyCommand {
 
 async fn api_key_command(pool: &sqlx::SqlitePool, cmd: ApiKeyCommand) -> anyhow::Result<()> {
     match cmd {
-        ApiKeyCommand::Add { name, pem_file, scope } => {
+        ApiKeyCommand::Add {
+            name,
+            pem_file,
+            scope,
+        } => {
             let pem = if pem_file == "-" {
                 std::io::read_to_string(std::io::stdin())?
             } else {
@@ -115,7 +119,11 @@ async fn api_key_command(pool: &sqlx::SqlitePool, cmd: ApiKeyCommand) -> anyhow:
                 anyhow::bail!("no active key named '{name}'");
             }
         }
-        ApiKeyCommand::Token { name, private_key_file, ttl } => {
+        ApiKeyCommand::Token {
+            name,
+            private_key_file,
+            ttl,
+        } => {
             let pem = std::fs::read_to_string(&private_key_file)?;
             println!("{}", apikeys::mint_token(&pem, &name, ttl)?);
         }

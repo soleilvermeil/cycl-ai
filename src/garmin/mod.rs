@@ -11,8 +11,7 @@ use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, Utc};
 use serde::Deserialize;
 
 const API_BASE: &str = "https://personal.connectapi.garmin.com";
-const TOKEN_URL: &str =
-    "https://personal.connectapi.garmin.com/personalapitoken-service/personal-api/personal-api-key/token";
+const TOKEN_URL: &str = "https://personal.connectapi.garmin.com/personalapitoken-service/personal-api/personal-api-key/token";
 const PAGE_LIMIT: i64 = 20;
 /// Full-history walk stops after this many empty 30-day windows in a row
 /// (~two years without an activity).
@@ -84,12 +83,18 @@ impl GarminClient {
             token.split('.').count() == 3,
             "la réponse du jeton Garmin n'est pas un JWT"
         );
-        Ok(Self { http, access_token: token })
+        Ok(Self {
+            http,
+            access_token: token,
+        })
     }
 
     /// Supported activities. `after_epoch` `None` (or 0) walks history backward
     /// until two quiet years; otherwise only windows from that instant to today.
-    pub async fn list_supported(&self, after_epoch: Option<i64>) -> anyhow::Result<Vec<ListedActivity>> {
+    pub async fn list_supported(
+        &self,
+        after_epoch: Option<i64>,
+    ) -> anyhow::Result<Vec<ListedActivity>> {
         let today = Utc::now().date_naive();
         let mut raw = Vec::new();
         if let Some(epoch) = after_epoch.filter(|epoch| *epoch > 0) {
@@ -117,7 +122,9 @@ impl GarminClient {
             let mut empty_windows = 0u32;
             let floor = NaiveDate::from_ymd_opt(2007, 1, 1).expect("valid date");
             while window_end >= floor && empty_windows < EMPTY_WINDOWS_BEFORE_STOP {
-                let window_start = window_end.checked_sub_signed(Duration::days(29)).unwrap_or(floor);
+                let window_start = window_end
+                    .checked_sub_signed(Duration::days(29))
+                    .unwrap_or(floor);
                 let batch = self.search_range(window_start, window_end).await?;
                 if batch.is_empty() {
                     empty_windows += 1;
@@ -140,10 +147,18 @@ impl GarminClient {
             let Some(sport) = map_sport(&activity.activity_type.type_key) else {
                 continue;
             };
-            let name = activity.activity_name.unwrap_or_default().trim().to_string();
+            let name = activity
+                .activity_name
+                .unwrap_or_default()
+                .trim()
+                .to_string();
             listed.push(ListedActivity {
                 id: activity.activity_id,
-                name: if name.is_empty() { "Sortie".into() } else { name },
+                name: if name.is_empty() {
+                    "Sortie".into()
+                } else {
+                    name
+                },
                 started_at_epoch: activity.start_time_gmt.as_deref().and_then(parse_gmt),
                 sport_type: sport.to_string(),
             });
@@ -159,12 +174,10 @@ impl GarminClient {
     pub async fn download_fit(&self, activity_id: i64) -> anyhow::Result<Option<Vec<u8>>> {
         let url = format!("{API_BASE}/download-service/files/activity/{activity_id}");
         let resp = self
-            .send_get(
-                self.http.get(url).bearer_auth(&self.access_token).header(
-                    "Accept",
-                    "application/zip, application/x-zip-compressed, application/octet-stream",
-                ),
-            )
+            .send_get(self.http.get(url).bearer_auth(&self.access_token).header(
+                "Accept",
+                "application/zip, application/x-zip-compressed, application/octet-stream",
+            ))
             .await
             .with_context(|| format!("téléchargement de l'activité {activity_id}"))?;
         let status = resp.status();
@@ -183,7 +196,11 @@ impl GarminClient {
         extract_fit(&bytes)
     }
 
-    async fn search_range(&self, start: NaiveDate, end: NaiveDate) -> anyhow::Result<Vec<RawActivity>> {
+    async fn search_range(
+        &self,
+        start: NaiveDate,
+        end: NaiveDate,
+    ) -> anyhow::Result<Vec<RawActivity>> {
         let mut pending = vec![(start, end)];
         let mut out = Vec::new();
         let mut steps = 0u32;
@@ -237,7 +254,10 @@ impl GarminClient {
 
     /// Replays a GET when Garmin answers 429. `Retry-After` is honored, otherwise
     /// the wait doubles from 2 s. The request must be cloneable (no streamed body).
-    async fn send_get(&self, request: reqwest::RequestBuilder) -> anyhow::Result<reqwest::Response> {
+    async fn send_get(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> anyhow::Result<reqwest::Response> {
         let mut wait = std::time::Duration::from_secs(2);
         for attempt in 0..6 {
             let resp = request
@@ -262,7 +282,12 @@ impl GarminClient {
         unreachable!("retry loop returns on the last attempt")
     }
 
-    async fn search_page(&self, start: NaiveDate, end: NaiveDate, offset: i64) -> anyhow::Result<Page> {
+    async fn search_page(
+        &self,
+        start: NaiveDate,
+        end: NaiveDate,
+        offset: i64,
+    ) -> anyhow::Result<Page> {
         let url = format!("{API_BASE}/activitylist-service/activities/search/activities");
         let resp = self
             .send_get(

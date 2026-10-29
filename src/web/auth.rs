@@ -1,23 +1,28 @@
 //! Bearer-JWT guard for the exposed API router (`web::serve_api`).
 
 use super::AppState;
-use crate::apikeys::{authenticate, AuthError};
+use crate::apikeys::{AuthError, authenticate};
+use axum::Json;
 use axum::extract::{Request, State};
-use axum::http::{header, Method, StatusCode};
+use axum::http::{Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde_json::json;
 
 fn deny(status: StatusCode, msg: &str) -> Response {
     let mut res = (status, Json(json!({ "error": msg }))).into_response();
     if status == StatusCode::UNAUTHORIZED {
-        res.headers_mut().insert(header::WWW_AUTHENTICATE, "Bearer".parse().unwrap());
+        res.headers_mut()
+            .insert(header::WWW_AUTHENTICATE, "Bearer".parse().unwrap());
     }
     res
 }
 
-pub(super) async fn require_api_key(State(state): State<AppState>, req: Request, next: Next) -> Response {
+pub(super) async fn require_api_key(
+    State(state): State<AppState>,
+    req: Request,
+    next: Next,
+) -> Response {
     let token = req
         .headers()
         .get(header::AUTHORIZATION)
@@ -42,7 +47,7 @@ pub(super) async fn require_api_key(State(state): State<AppState>, req: Request,
 mod tests {
     use super::super::api_router;
     use super::*;
-    use crate::apikeys::{add, mint_token, Scope};
+    use crate::apikeys::{Scope, add, mint_token};
     use axum::body::Body;
     use axum::http::Request;
     use sqlx::sqlite::SqlitePoolOptions;
@@ -52,9 +57,14 @@ mod tests {
     const PUBLIC: &str = include_str!("../../tests/fixtures/test_rsa_public.pem");
 
     async fn app(scope: Scope) -> axum::Router {
-        let pool = SqlitePoolOptions::new().connect("sqlite::memory:").await.unwrap();
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
         crate::db::migrate(&pool).await.unwrap();
-        crate::db::seed_athlete_config(&pool, &test_config()).await.unwrap();
+        crate::db::seed_athlete_config(&pool, &test_config())
+            .await
+            .unwrap();
         add(&pool, "k", PUBLIC, scope).await.unwrap();
         api_router(AppState { pool })
     }
@@ -66,6 +76,7 @@ mod tests {
             strava_client_secret: String::new(),
             strava_refresh_token: String::new(),
             anthropic_api_key: String::new(),
+            openai_api_key: String::new(),
             ftp_watts: 200,
             hr_max: 190,
             hr_rest: 50,
@@ -74,21 +85,45 @@ mod tests {
         }
     }
 
-    async fn status(app: &axum::Router, method: &str, uri: &str, auth: Option<String>) -> StatusCode {
+    async fn status(
+        app: &axum::Router,
+        method: &str,
+        uri: &str,
+        auth: Option<String>,
+    ) -> StatusCode {
         let mut req = Request::builder().method(method).uri(uri);
         if let Some(a) = auth {
             req = req.header("authorization", a);
         }
-        app.clone().oneshot(req.body(Body::empty()).unwrap()).await.unwrap().status()
+        app.clone()
+            .oneshot(req.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+            .status()
     }
 
     #[tokio::test]
     async fn api_requires_a_valid_token() {
         let app = app(Scope::Read).await;
-        assert_eq!(status(&app, "GET", "/api/v1/profile", None).await, StatusCode::UNAUTHORIZED);
-        assert_eq!(status(&app, "GET", "/api/v1/profile", Some("Bearer junk".into())).await, StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            status(&app, "GET", "/api/v1/profile", None).await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            status(&app, "GET", "/api/v1/profile", Some("Bearer junk".into())).await,
+            StatusCode::UNAUTHORIZED
+        );
         let token = mint_token(PRIVATE, "k", 60).unwrap();
-        assert_eq!(status(&app, "GET", "/api/v1/profile", Some(format!("Bearer {token}"))).await, StatusCode::OK);
+        assert_eq!(
+            status(
+                &app,
+                "GET",
+                "/api/v1/profile",
+                Some(format!("Bearer {token}"))
+            )
+            .await,
+            StatusCode::OK
+        );
     }
 
     #[tokio::test]
@@ -96,7 +131,13 @@ mod tests {
         let app = app(Scope::Read).await;
         let token = mint_token(PRIVATE, "k", 60).unwrap();
         assert_eq!(
-            status(&app, "DELETE", "/api/v1/planned/1", Some(format!("Bearer {token}"))).await,
+            status(
+                &app,
+                "DELETE",
+                "/api/v1/planned/1",
+                Some(format!("Bearer {token}"))
+            )
+            .await,
             StatusCode::FORBIDDEN
         );
     }
@@ -105,7 +146,13 @@ mod tests {
     async fn api_router_does_not_serve_the_ui() {
         let app = app(Scope::Read).await;
         let token = mint_token(PRIVATE, "k", 60).unwrap();
-        assert_eq!(status(&app, "GET", "/settings", None).await, StatusCode::UNAUTHORIZED);
-        assert_eq!(status(&app, "GET", "/settings", Some(format!("Bearer {token}"))).await, StatusCode::NOT_FOUND);
+        assert_eq!(
+            status(&app, "GET", "/settings", None).await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            status(&app, "GET", "/settings", Some(format!("Bearer {token}"))).await,
+            StatusCode::NOT_FOUND
+        );
     }
 }

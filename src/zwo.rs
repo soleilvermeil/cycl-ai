@@ -29,7 +29,9 @@ fn write_steps(steps: &[WorkoutStep], a: &Athlete, out: &mut String) {
             WorkoutStep::Repeat { count, steps } => match steps.as_slice() {
                 // Zwift's native on/off block; anything else is unrolled
                 // since .zwo has no nested repeats.
-                [WorkoutStep::Interval(on), WorkoutStep::Recovery(off)] if on.note.is_none() && off.note.is_none() => {
+                [WorkoutStep::Interval(on), WorkoutStep::Recovery(off)]
+                    if on.note.is_none() && off.note.is_none() =>
+                {
                     let (on_lo, on_hi) = fracs(on, a);
                     let (off_lo, off_hi) = fracs(off, a);
                     out.push_str(&format!(
@@ -49,8 +51,12 @@ fn write_steps(steps: &[WorkoutStep], a: &Athlete, out: &mut String) {
 fn fracs(s: &SimpleStep, a: &Athlete) -> (f64, f64) {
     use crate::workout::Target;
     match &s.target {
-        Some(Target::PowerRange { low, high }) if a.ftp_watts > 0.0 => (low / a.ftp_watts, high / a.ftp_watts),
-        Some(Target::PowerZone { zone }) => crate::workout::POWER_ZONE_RANGES_FRAC[(*zone).clamp(1, 7) as usize - 1],
+        Some(Target::PowerRange { low, high }) if a.ftp_watts > 0.0 => {
+            (low / a.ftp_watts, high / a.ftp_watts)
+        }
+        Some(Target::PowerZone { zone }) => {
+            crate::workout::POWER_ZONE_RANGES_FRAC[(*zone).clamp(1, 7) as usize - 1]
+        }
         Some(t) => {
             let f = t.power_frac(a);
             (f, f)
@@ -64,7 +70,10 @@ fn secs(s: &SimpleStep) -> u32 {
 }
 
 fn steady(s: &SimpleStep, frac: f64, out: &mut String) {
-    let head = format!("    <SteadyState Duration=\"{}\" Power=\"{frac:.3}\"", secs(s));
+    let head = format!(
+        "    <SteadyState Duration=\"{}\" Power=\"{frac:.3}\"",
+        secs(s)
+    );
     push_with_note(head, s, out);
 }
 
@@ -73,7 +82,10 @@ fn steady(s: &SimpleStep, frac: f64, out: &mut String) {
 fn ramp(tag: &str, s: &SimpleStep, a: &Athlete, down: bool, out: &mut String) {
     let (lo, hi) = fracs(s, a);
     let (start, end) = if down { (hi, lo) } else { (lo, hi) };
-    let head = format!("    <{tag} Duration=\"{}\" PowerLow=\"{start:.3}\" PowerHigh=\"{end:.3}\"", secs(s));
+    let head = format!(
+        "    <{tag} Duration=\"{}\" PowerLow=\"{start:.3}\" PowerHigh=\"{end:.3}\"",
+        secs(s)
+    );
     push_with_note_tag(head, tag, s, out);
 }
 
@@ -93,7 +105,10 @@ fn push_with_note_tag(head: String, tag: &str, s: &SimpleStep, out: &mut String)
 }
 
 pub fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 #[cfg(test)]
@@ -102,7 +117,12 @@ mod tests {
     use serde_json::json;
 
     fn athlete() -> Athlete {
-        Athlete { ftp_watts: 200.0, hr_rest: 50.0, hr_max: 190.0, run_threshold_pace_s: 0.0 }
+        Athlete {
+            ftp_watts: 200.0,
+            hr_rest: 50.0,
+            hr_max: 190.0,
+            run_threshold_pace_s: 0.0,
+        }
     }
 
     #[test]

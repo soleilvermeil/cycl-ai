@@ -5,7 +5,7 @@
 //! the track and profile are sliced from the streams of a recent effort.
 
 use super::format::format_datetime_fr;
-use super::{escape_html, layout, AppState};
+use super::{AppState, escape_html, layout};
 use axum::extract::{Query, State};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use serde::Deserialize;
@@ -27,7 +27,8 @@ pub async fn import(State(state): State<AppState>) -> Response {
         Ok(()) => Redirect::to("/segments").into_response(),
         Err(err) => {
             tracing::warn!(?err, "starred segments import failed");
-            Html(render(&state, None, Some(&format!("Import impossible : {err}"))).await).into_response()
+            Html(render(&state, None, Some(&format!("Import impossible : {err}"))).await)
+                .into_response()
         }
     }
 }
@@ -72,7 +73,9 @@ fn format_effort_time(secs: f64) -> String {
 }
 
 fn stat(label: &str, value: String) -> String {
-    format!(r#"<div class="stat"><div class="value">{value}</div><div class="label">{label}</div></div>"#)
+    format!(
+        r#"<div class="stat"><div class="value">{value}</div><div class="label">{label}</div></div>"#
+    )
 }
 
 /// Segment track and profile, sliced from one activity's streams.
@@ -94,7 +97,9 @@ fn extract_geometry(streams_json: &str, start_s: f64, end_s: f64) -> Option<Geom
     let altitude = crate::segments::f64_array(&v, "altitude");
 
     let n = latlng.len().min(distance.len()).min(time.len());
-    let idx: Vec<usize> = (0..n).filter(|&i| time[i] >= start_s && time[i] <= end_s).collect();
+    let idx: Vec<usize> = (0..n)
+        .filter(|&i| time[i] >= start_s && time[i] <= end_s)
+        .collect();
     let (&first, _) = (idx.first()?, idx.last()?);
 
     let mut kept: Vec<usize> = vec![first];
@@ -148,7 +153,12 @@ fn extract_geometry(streams_json: &str, start_s: f64, end_s: f64) -> Option<Geom
         None => (Vec::new(), Vec::new()),
     };
 
-    Some(Geometry { latlng: pts, dist_km: dist_m.iter().map(|d| d / 1000.0).collect(), ele_m: ele, grade_pct: grade })
+    Some(Geometry {
+        latlng: pts,
+        dist_km: dist_m.iter().map(|d| d / 1000.0).collect(),
+        ele_m: ele,
+        grade_pct: grade,
+    })
 }
 
 async fn render(state: &AppState, selected: Option<i64>, error: Option<&str>) -> String {
@@ -164,15 +174,17 @@ async fn render(state: &AppState, selected: Option<i64>, error: Option<&str>) ->
     .unwrap_or_default();
     let segments: Vec<SegmentRow> = rows
         .into_iter()
-        .map(|(id, name, distance_m, elevation_gain_m, efforts, best_power_w, last_at)| SegmentRow {
-            id,
-            name,
-            distance_m,
-            elevation_gain_m,
-            efforts,
-            best_power_w,
-            last_at,
-        })
+        .map(
+            |(id, name, distance_m, elevation_gain_m, efforts, best_power_w, last_at)| SegmentRow {
+                id,
+                name,
+                distance_m,
+                elevation_gain_m,
+                efforts,
+                best_power_w,
+                last_at,
+            },
+        )
         .collect();
 
     let error_html = error
@@ -223,13 +235,20 @@ async fn render(state: &AppState, selected: Option<i64>, error: Option<&str>) ->
 <p class="hint">Seuls les segments en favoris sur Strava sont importés (coordonnées de départ et d'arrivée) ; les passages sont détectés par CyclAI sur tes sorties vélo avec capteur de puissance. L'import relance la détection sur toutes les sorties et peut prendre un moment.</p>
 </section>
 {detail_html}"#,
-        header = layout::page_header("Segments", "Tes segments favoris et tes derniers passages dessus.", actions),
+        header = layout::page_header(
+            "Segments",
+            "Tes segments favoris et tes derniers passages dessus.",
+            actions
+        ),
     );
 
     let head = r#"<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>"#;
-    layout::Page::new("Segments", layout::Nav::Segments, &body).head(head).css(CSS).render()
+    layout::Page::new("Segments", layout::Nav::Segments, &body)
+        .head(head)
+        .css(CSS)
+        .render()
 }
 
 async fn render_detail(state: &AppState, seg: &SegmentRow) -> String {
@@ -246,31 +265,48 @@ async fn render_detail(state: &AppState, seg: &SegmentRow) -> String {
         .unwrap_or_default();
     let efforts: Vec<EffortRow> = rows
         .into_iter()
-        .map(|(activity_id, started_at, title, start_s, end_s, avg_power_w, avg_speed_ms, avg_hr, delta_vs_pr_pct)| EffortRow {
-            activity_id,
-            started_at,
-            title,
-            start_s,
-            end_s,
-            avg_power_w,
-            avg_speed_ms,
-            avg_hr,
-            delta_vs_pr_pct,
-        })
+        .map(
+            |(
+                activity_id,
+                started_at,
+                title,
+                start_s,
+                end_s,
+                avg_power_w,
+                avg_speed_ms,
+                avg_hr,
+                delta_vs_pr_pct,
+            )| EffortRow {
+                activity_id,
+                started_at,
+                title,
+                start_s,
+                end_s,
+                avg_power_w,
+                avg_speed_ms,
+                avg_hr,
+                delta_vs_pr_pct,
+            },
+        )
         .collect();
 
     // Track + profile from the most recent effort whose streams have altitude
     // (falling back to the most recent one with a usable track).
     let mut geometry: Option<Geometry> = None;
     for e in efforts.iter().take(5) {
-        let (Some(s), Some(en)) = (e.start_s, e.end_s) else { continue };
-        let streams: Option<String> = sqlx::query_scalar("SELECT streams_json FROM activity_streams WHERE activity_id = ?")
-            .bind(e.activity_id)
-            .fetch_optional(&state.pool)
-            .await
-            .ok()
-            .flatten();
-        let Some(g) = streams.and_then(|j| extract_geometry(&j, s, en)) else { continue };
+        let (Some(s), Some(en)) = (e.start_s, e.end_s) else {
+            continue;
+        };
+        let streams: Option<String> =
+            sqlx::query_scalar("SELECT streams_json FROM activity_streams WHERE activity_id = ?")
+                .bind(e.activity_id)
+                .fetch_optional(&state.pool)
+                .await
+                .ok()
+                .flatten();
+        let Some(g) = streams.and_then(|j| extract_geometry(&j, s, en)) else {
+            continue;
+        };
         let has_ele = !g.ele_m.is_empty();
         if geometry.is_none() || has_ele {
             geometry = Some(g);
@@ -283,13 +319,19 @@ async fn render_detail(state: &AppState, seg: &SegmentRow) -> String {
     let mut stats = stat("Distance", format!("{:.2} km", seg.distance_m / 1000.0));
     stats += &stat("D+", format!("{:.0} m", seg.elevation_gain_m));
     if seg.distance_m > 0.0 {
-        stats += &stat("Pente moy.", format!("{:.1} %", seg.elevation_gain_m / seg.distance_m * 100.0));
+        stats += &stat(
+            "Pente moy.",
+            format!("{:.1} %", seg.elevation_gain_m / seg.distance_m * 100.0),
+        );
     }
     stats += &stat("Passages", seg.efforts.to_string());
     if let Some(p) = seg.best_power_w {
         stats += &stat("Meilleure puissance", format!("{p:.0} W"));
     }
-    let best_time = efforts.iter().filter_map(|e| e.duration_s()).fold(None::<f64>, |a, d| Some(a.map_or(d, |b| b.min(d))));
+    let best_time = efforts
+        .iter()
+        .filter_map(|e| e.duration_s())
+        .fold(None::<f64>, |a, d| Some(a.map_or(d, |b| b.min(d))));
     if let Some(t) = best_time {
         stats += &stat("Meilleur temps", format_effort_time(t));
     }

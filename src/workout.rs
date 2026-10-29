@@ -74,7 +74,10 @@ pub fn parse_pace(s: &str) -> Option<f64> {
     let s = s.trim();
     match s.split_once(':') {
         Some((m, sec)) => {
-            let (m, sec) = (m.trim().parse::<f64>().ok()?, sec.trim().parse::<f64>().ok()?);
+            let (m, sec) = (
+                m.trim().parse::<f64>().ok()?,
+                sec.trim().parse::<f64>().ok()?,
+            );
             (m >= 0.0 && (0.0..60.0).contains(&sec)).then_some(m * 60.0 + sec)
         }
         None => s.replace(',', ".").parse::<f64>().ok(),
@@ -90,16 +93,26 @@ fn de_pace<'de, D: Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
     }
     match Pace::deserialize(d)? {
         Pace::Seconds(n) => Ok(n),
-        Pace::Text(s) => parse_pace(&s)
-            .ok_or_else(|| serde::de::Error::custom(format!("allure invalide : « {s} » (attendu m:ss, ex: 5:30)"))),
+        Pace::Text(s) => parse_pace(&s).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "allure invalide : « {s} » (attendu m:ss, ex: 5:30)"
+            ))
+        }),
     }
 }
 
 /// Each power zone as a (low, high) fraction of FTP — the 7-zone bounds of
 /// `metrics::power_zone`, with the open ends (below Z1 / above Z7) capped at
 /// 40 % / 180 % so the zones can be drawn and averaged.
-pub const POWER_ZONE_RANGES_FRAC: [(f64, f64); 7] =
-    [(0.40, 0.55), (0.55, 0.75), (0.75, 0.90), (0.90, 1.05), (1.05, 1.20), (1.20, 1.50), (1.50, 1.80)];
+pub const POWER_ZONE_RANGES_FRAC: [(f64, f64); 7] = [
+    (0.40, 0.55),
+    (0.55, 0.75),
+    (0.75, 0.90),
+    (0.90, 1.05),
+    (1.05, 1.20),
+    (1.20, 1.50),
+    (1.50, 1.80),
+];
 
 /// What the intensity estimates (distance, TSS) need to know about the
 /// athlete: FTP for power targets, resting/max HR to place heart-rate targets
@@ -142,7 +155,11 @@ pub const HR_ZONE_POWER_FRAC: [f64; 5] = [0.50, 0.65, 0.82, 0.97, 1.10];
 pub fn hr_zone_of(bpm: f64, a: &Athlete) -> u8 {
     let hrr = (a.hr_max - a.hr_rest).max(1.0);
     let frac = (bpm - a.hr_rest) / hrr;
-    HR_ZONE_UPPER.iter().position(|u| frac < *u).map(|i| i as u8 + 1).unwrap_or(5)
+    HR_ZONE_UPPER
+        .iter()
+        .position(|u| frac < *u)
+        .map(|i| i as u8 + 1)
+        .unwrap_or(5)
 }
 
 impl Workout {
@@ -184,11 +201,18 @@ fn steps_run_distance_km(steps: &[WorkoutStep], a: &Athlete) -> Option<f64> {
     let mut total = 0.0;
     for step in steps {
         match step {
-            WorkoutStep::Repeat { count, steps } => total += *count as f64 * steps_run_distance_km(steps, a)?,
-            WorkoutStep::Warmup(s) | WorkoutStep::Interval(s) | WorkoutStep::Recovery(s) | WorkoutStep::Cooldown(s) => {
+            WorkoutStep::Repeat { count, steps } => {
+                total += *count as f64 * steps_run_distance_km(steps, a)?
+            }
+            WorkoutStep::Warmup(s)
+            | WorkoutStep::Interval(s)
+            | WorkoutStep::Recovery(s)
+            | WorkoutStep::Cooldown(s) => {
                 let pace_s_per_km = match &s.target {
                     Some(Target::PaceRange { low, high }) => (low + high) / 2.0,
-                    Some(t) if a.run_threshold_pace_s > 0.0 => a.run_threshold_pace_s / t.power_frac(a).max(0.4),
+                    Some(t) if a.run_threshold_pace_s > 0.0 => {
+                        a.run_threshold_pace_s / t.power_frac(a).max(0.4)
+                    }
                     _ => return None,
                 };
                 if pace_s_per_km <= 0.0 {
@@ -211,7 +235,10 @@ fn steps_load(steps: &[WorkoutStep], a: &Athlete) -> (f64, f64) {
                 minutes += *count as f64 * m;
                 tss += *count as f64 * t;
             }
-            WorkoutStep::Warmup(s) | WorkoutStep::Interval(s) | WorkoutStep::Recovery(s) | WorkoutStep::Cooldown(s) => {
+            WorkoutStep::Warmup(s)
+            | WorkoutStep::Interval(s)
+            | WorkoutStep::Recovery(s)
+            | WorkoutStep::Cooldown(s) => {
                 let m = s.duration.minutes();
                 let frac = s.target.as_ref().map(|t| t.power_frac(a)).unwrap_or(0.6);
                 minutes += m;
@@ -236,25 +263,37 @@ fn check_steps(steps: &[WorkoutStep]) -> Option<String> {
                     return Some(err);
                 }
             }
-            WorkoutStep::Warmup(s) | WorkoutStep::Interval(s) | WorkoutStep::Recovery(s) | WorkoutStep::Cooldown(s) => {
+            WorkoutStep::Warmup(s)
+            | WorkoutStep::Interval(s)
+            | WorkoutStep::Recovery(s)
+            | WorkoutStep::Cooldown(s) => {
                 if s.duration.minutes() <= 0.0 {
                     let Duration::Time { value } = &s.duration;
-                    return Some(format!("Durée invalide : « {value} » (ex: 10min, 90s, 1h30, 1:30)"));
+                    return Some(format!(
+                        "Durée invalide : « {value} » (ex: 10min, 90s, 1h30, 1:30)"
+                    ));
                 }
                 match &s.target {
                     Some(Target::PowerRange { low, high }) if low > high => {
-                        return Some("La cible de puissance basse doit être inférieure ou égale à la haute.".to_string());
+                        return Some(
+                            "La cible de puissance basse doit être inférieure ou égale à la haute."
+                                .to_string(),
+                        );
                     }
                     Some(Target::HrRange { low, high }) => {
                         if *low <= 0.0 || low > high {
-                            return Some("La cible de FC doit être positive, basse ≤ haute.".to_string());
+                            return Some(
+                                "La cible de FC doit être positive, basse ≤ haute.".to_string(),
+                            );
                         }
                     }
                     Some(Target::HrZone { zone }) if !(1..=5).contains(zone) => {
                         return Some("La zone de FC doit être comprise entre 1 et 5.".to_string());
                     }
                     Some(Target::PowerZone { zone }) if !(1..=7).contains(zone) => {
-                        return Some("La zone de puissance doit être comprise entre 1 et 7.".to_string());
+                        return Some(
+                            "La zone de puissance doit être comprise entre 1 et 7.".to_string(),
+                        );
                     }
                     Some(Target::PaceRange { low, high }) => {
                         if *low <= 0.0 || low > high {
@@ -305,7 +344,11 @@ pub fn parse_minutes(raw: &str) -> f64 {
     let num = |t: &str| t.trim().parse::<f64>().ok();
     if let Some((h, rest)) = s.split_once('h') {
         let rest = rest.trim().trim_end_matches("min").trim();
-        let minutes = if rest.is_empty() { Some(0.0) } else { num(rest) };
+        let minutes = if rest.is_empty() {
+            Some(0.0)
+        } else {
+            num(rest)
+        };
         return match (num(h), minutes) {
             (Some(h), Some(m)) => h * 60.0 + m,
             _ => 0.0,
@@ -375,7 +418,7 @@ fn speed_kmh(power_frac_ftp: Option<f64>, terrain: &str) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     /// Injects the same "terrain" default the deserializer applies, so a
     /// parse→serialize round trip can be compared structurally against the
@@ -411,9 +454,11 @@ mod tests {
         match v {
             Value::Number(n) => n.as_f64().map(|f| json!(f)).unwrap_or(Value::Number(n)),
             Value::Array(arr) => Value::Array(arr.into_iter().map(normalize_numbers).collect()),
-            Value::Object(map) => {
-                Value::Object(map.into_iter().map(|(k, v)| (k, normalize_numbers(v))).collect())
-            }
+            Value::Object(map) => Value::Object(
+                map.into_iter()
+                    .map(|(k, v)| (k, normalize_numbers(v)))
+                    .collect(),
+            ),
             other => other,
         }
     }
@@ -423,7 +468,12 @@ mod tests {
     /// with what digest.rs's LLM prompt produces and what
     /// `web::render_workout_steps` (which stays on untyped `Value`) expects.
     fn test_athlete() -> Athlete {
-        Athlete { ftp_watts: 205.0, hr_rest: 53.0, hr_max: 192.0, run_threshold_pace_s: 270.0 }
+        Athlete {
+            ftp_watts: 205.0,
+            hr_rest: 53.0,
+            hr_max: 192.0,
+            run_threshold_pace_s: 270.0,
+        }
     }
 
     #[test]
@@ -438,14 +488,28 @@ mod tests {
         assert_eq!(re[1]["target"]["type"], "hr_range");
 
         let a = test_athlete();
-        let WorkoutStep::Interval(s0) = &steps[0] else { panic!() };
-        assert_eq!(s0.target.as_ref().unwrap().power_frac(&a), HR_ZONE_POWER_FRAC[2]);
+        let WorkoutStep::Interval(s0) = &steps[0] else {
+            panic!()
+        };
+        assert_eq!(
+            s0.target.as_ref().unwrap().power_frac(&a),
+            HR_ZONE_POWER_FRAC[2]
+        );
         // 155 bpm with rest 53 / max 192 is 73 % of reserve: zone 3.
-        let WorkoutStep::Interval(s1) = &steps[1] else { panic!() };
-        assert_eq!(s1.target.as_ref().unwrap().power_frac(&a), HR_ZONE_POWER_FRAC[2]);
+        let WorkoutStep::Interval(s1) = &steps[1] else {
+            panic!()
+        };
+        assert_eq!(
+            s1.target.as_ref().unwrap().power_frac(&a),
+            HR_ZONE_POWER_FRAC[2]
+        );
 
         // HR-targeted steps still produce a duration and a load estimate.
-        let w = Workout { name: "x".into(), steps, estimated_distance_km: None };
+        let w = Workout {
+            name: "x".into(),
+            steps,
+            estimated_distance_km: None,
+        };
         let (min, tss) = w.load_estimate(&a);
         assert_eq!(min, 20.0);
         assert!(tss > 0.0);
@@ -461,20 +525,35 @@ mod tests {
         .unwrap();
         // "m:ss" and plain seconds both read as seconds per km, written back as numbers.
         let re = serde_json::to_value(&steps).unwrap();
-        assert_eq!(re[1]["target"], json!({"type": "pace_range", "low": 270.0, "high": 300.0}));
+        assert_eq!(
+            re[1]["target"],
+            json!({"type": "pace_range", "low": 270.0, "high": 300.0})
+        );
 
         let a = test_athlete();
-        let WorkoutStep::Interval(z) = &steps[0] else { panic!() };
+        let WorkoutStep::Interval(z) = &steps[0] else {
+            panic!()
+        };
         assert!((z.target.as_ref().unwrap().power_frac(&a) - 0.975).abs() < 1e-9);
         // Threshold pace 4:30; a 4:45 average pace is a bit under threshold.
-        let WorkoutStep::Interval(p) = &steps[1] else { panic!() };
+        let WorkoutStep::Interval(p) = &steps[1] else {
+            panic!()
+        };
         let f = p.target.as_ref().unwrap().power_frac(&a);
         assert!((f - 270.0 / 285.0).abs() < 1e-9, "got {f}");
         // Without a threshold pace set, a pace step counts as an easy 0.75.
-        let no_thr = Athlete { run_threshold_pace_s: 0.0, ..a };
+        let no_thr = Athlete {
+            run_threshold_pace_s: 0.0,
+            ..a
+        };
         assert_eq!(p.target.as_ref().unwrap().power_frac(&no_thr), 0.75);
 
-        assert!(serde_json::from_value::<Target>(json!({"type": "pace_range", "low": "fast", "high": 300})).is_err());
+        assert!(
+            serde_json::from_value::<Target>(
+                json!({"type": "pace_range", "low": "fast", "high": 300})
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -494,7 +573,13 @@ mod tests {
         let km = hr.estimate_run_distance_km(&a).unwrap();
         assert!(km > 8.0 && km < 14.0, "got {km}");
         // ...and unknowable without one.
-        assert_eq!(hr.estimate_run_distance_km(&Athlete { run_threshold_pace_s: 0.0, ..a }), None);
+        assert_eq!(
+            hr.estimate_run_distance_km(&Athlete {
+                run_threshold_pace_s: 0.0,
+                ..a
+            }),
+            None
+        );
     }
 
     #[test]
@@ -531,8 +616,8 @@ mod tests {
             {"type": "cooldown", "duration": {"type": "time", "value": "10min"}, "target": {"type": "power_range", "low": 100, "high": 123}}
         ]);
 
-        let parsed: Vec<WorkoutStep> =
-            serde_json::from_value(steps_json.clone()).expect("must parse digest.rs's own JSON shape");
+        let parsed: Vec<WorkoutStep> = serde_json::from_value(steps_json.clone())
+            .expect("must parse digest.rs's own JSON shape");
         let re_serialized = normalize_numbers(serde_json::to_value(&parsed).unwrap());
         let expected = normalize_numbers(with_default_terrain(steps_json));
 
@@ -571,9 +656,27 @@ mod tests {
 
     #[test]
     fn duration_parses_minutes_and_seconds() {
-        assert_eq!(Duration::Time { value: "15min".into() }.minutes(), 15.0);
-        assert_eq!(Duration::Time { value: "90sec".into() }.minutes(), 1.5);
-        assert_eq!(Duration::Time { value: "30s".into() }.minutes(), 0.5);
+        assert_eq!(
+            Duration::Time {
+                value: "15min".into()
+            }
+            .minutes(),
+            15.0
+        );
+        assert_eq!(
+            Duration::Time {
+                value: "90sec".into()
+            }
+            .minutes(),
+            1.5
+        );
+        assert_eq!(
+            Duration::Time {
+                value: "30s".into()
+            }
+            .minutes(),
+            0.5
+        );
     }
 
     #[test]

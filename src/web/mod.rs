@@ -12,10 +12,10 @@ mod stats;
 mod workout;
 mod workout_chart;
 
+use axum::Router;
 use axum::extract::{Form, State};
 use axum::response::{Html, Redirect};
 use axum::routing::{get, post};
-use axum::Router;
 use chrono::{Datelike, NaiveDate};
 use format::{format_datetime_fr, format_duration_hms};
 use regex::Regex;
@@ -38,22 +38,56 @@ pub async fn serve(pool: SqlitePool, bind: &str) -> anyhow::Result<()> {
     let app = Router::new()
         .route("/", get(dashboard))
         .route("/favicon.ico", get(favicon))
-        .route("/manifest.webmanifest", get(|| pwa_asset("application/manifest+json", include_bytes!("../../assets/manifest.webmanifest"))))
-        .route("/sw.js", get(|| pwa_asset("text/javascript", include_bytes!("../../assets/sw.js"))))
-        .route("/icon-192.png", get(|| pwa_asset("image/png", include_bytes!("../../assets/icon-192.png"))))
-        .route("/icon-512.png", get(|| pwa_asset("image/png", include_bytes!("../../assets/icon-512.png"))))
-        .route("/apple-touch-icon.png", get(|| pwa_asset("image/png", include_bytes!("../../assets/apple-touch-icon.png"))))
+        .route(
+            "/manifest.webmanifest",
+            get(|| {
+                pwa_asset(
+                    "application/manifest+json",
+                    include_bytes!("../../assets/manifest.webmanifest"),
+                )
+            }),
+        )
+        .route(
+            "/sw.js",
+            get(|| pwa_asset("text/javascript", include_bytes!("../../assets/sw.js"))),
+        )
+        .route(
+            "/icon-192.png",
+            get(|| pwa_asset("image/png", include_bytes!("../../assets/icon-192.png"))),
+        )
+        .route(
+            "/icon-512.png",
+            get(|| pwa_asset("image/png", include_bytes!("../../assets/icon-512.png"))),
+        )
+        .route(
+            "/apple-touch-icon.png",
+            get(|| {
+                pwa_asset(
+                    "image/png",
+                    include_bytes!("../../assets/apple-touch-icon.png"),
+                )
+            }),
+        )
         .route("/activity/{id}", get(detail::activity_detail))
         .route("/activity/{id}/context", post(detail::regenerate_bilan))
         .route("/activity/{id}/report", post(detail::activity_report))
-        .route("/activity/{id}/description", post(detail::update_description))
+        .route(
+            "/activity/{id}/description",
+            post(detail::update_description),
+        )
         .route("/workouts", get(workout::list).post(workout::create))
-        .route("/workouts/{id}", get(workout::edit_form).post(workout::update))
+        .route(
+            "/workouts/{id}",
+            get(workout::edit_form).post(workout::update),
+        )
         .route("/workouts/{id}/delete", post(workout::delete))
         .route("/workouts/{id}/zwo", get(workout::export_zwo))
         .route("/planned/new", get(planned::new_form))
         .route("/planned", post(planned::create))
-        .route("/planned/{id}", get(planned::edit_form).post(planned::update))
+        .route(
+            "/planned/{id}",
+            get(planned::edit_form).post(planned::update),
+        )
         .route("/planned/{id}/delete", post(planned::delete))
         .route("/digest", post(trigger_digest))
         .route("/digest/report", post(digest_report))
@@ -68,8 +102,14 @@ pub async fn serve(pool: SqlitePool, bind: &str) -> anyhow::Result<()> {
         .route("/settings", get(settings::page))
         .route("/settings/keys", post(settings::update_keys))
         .route("/settings/profile", post(settings::update_profile))
-        .route("/settings/prompts/bilan", post(settings::update_bilan_prompt))
-        .route("/settings/prompts/digest", post(settings::update_digest_prompt))
+        .route(
+            "/settings/prompts/bilan",
+            post(settings::update_bilan_prompt),
+        )
+        .route(
+            "/settings/prompts/digest",
+            post(settings::update_digest_prompt),
+        )
         .route("/settings/athlete", post(settings::update_athlete_config))
         .route("/settings/appearance", post(settings::update_appearance))
         // Planned-route GPX and FIT/GPX activity uploads can exceed axum's 2 MB default.
@@ -94,7 +134,10 @@ async fn favicon() -> impl axum::response::IntoResponse {
 
 /// Static PWA files (manifest, service worker, icons). `no-cache` on all of
 /// them so a changed service worker or manifest is picked up right away.
-async fn pwa_asset(content_type: &'static str, body: &'static [u8]) -> impl axum::response::IntoResponse {
+async fn pwa_asset(
+    content_type: &'static str,
+    body: &'static [u8],
+) -> impl axum::response::IntoResponse {
     (
         [
             (axum::http::header::CONTENT_TYPE, content_type),
@@ -121,13 +164,25 @@ fn api_router(state: AppState) -> Router {
         .route("/api/v1/summary", get(api::summary))
         .route("/api/v1/activities", get(api::activities))
         .route("/api/v1/activities/{id}", get(api::activity))
-        .route("/api/v1/activities/{id}/streams", get(api::activity_streams))
+        .route(
+            "/api/v1/activities/{id}/streams",
+            get(api::activity_streams),
+        )
         .route("/api/v1/workouts", get(api::workouts))
-        .route("/api/v1/planned", get(api::planned_list).post(api::planned_create))
-        .route("/api/v1/planned/{id}", axum::routing::delete(api::planned_delete))
+        .route(
+            "/api/v1/planned",
+            get(api::planned_list).post(api::planned_create),
+        )
+        .route(
+            "/api/v1/planned/{id}",
+            axum::routing::delete(api::planned_delete),
+        )
         // `layer` (not `route_layer`): unknown paths answer 401 too, so the
         // exposed process reveals nothing about what it does or doesn't serve.
-        .layer(axum::middleware::from_fn_with_state(state.clone(), auth::require_api_key))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_api_key,
+        ))
         .with_state(state)
 }
 
@@ -170,11 +225,17 @@ struct DigestRow {
 }
 
 async fn fetch_athlete_config(pool: &SqlitePool) -> anyhow::Result<AthleteConfig> {
-    let (ftp_watts, hr_rest, hr_max, run_threshold_pace_s): (i64, i64, i64, i64) =
-        sqlx::query_as("SELECT ftp_watts, hr_rest, hr_max, run_threshold_pace_s FROM athlete_config WHERE id = 1")
-            .fetch_one(pool)
-            .await?;
-    Ok(AthleteConfig { ftp_watts, hr_rest, hr_max, run_threshold_pace_s })
+    let (ftp_watts, hr_rest, hr_max, run_threshold_pace_s): (i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT ftp_watts, hr_rest, hr_max, run_threshold_pace_s FROM athlete_config WHERE id = 1",
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(AthleteConfig {
+        ftp_watts,
+        hr_rest,
+        hr_max,
+        run_threshold_pace_s,
+    })
 }
 
 /// Reads each activity's route thumbnail from `activities.route_thumb_svg`
@@ -183,9 +244,19 @@ async fn fetch_athlete_config(pool: &SqlitePool) -> anyhow::Result<AthleteConfig
 /// `activity_streams`, whose rows carry the full multi-hundred-KB streams.
 #[allow(clippy::type_complexity)]
 async fn fetch_recent_activities(pool: &SqlitePool) -> anyhow::Result<Vec<ActivityRow>> {
-    let rows: Vec<(i64, String, String, f64, i64, f64, Option<f64>, Option<f64>, Option<String>, Option<String>)> =
-        sqlx::query_as(
-            r#"
+    let rows: Vec<(
+        i64,
+        String,
+        String,
+        f64,
+        i64,
+        f64,
+        Option<f64>,
+        Option<f64>,
+        Option<String>,
+        Option<String>,
+    )> = sqlx::query_as(
+        r#"
         SELECT a.id, a.sport_type, a.started_at, a.distance_m, a.duration_s, a.elevation_gain_m,
                a.tss, a.intensity_factor, b.text, a.route_thumb_svg
         FROM activities a
@@ -193,14 +264,25 @@ async fn fetch_recent_activities(pool: &SqlitePool) -> anyhow::Result<Vec<Activi
         ORDER BY a.started_at DESC
         LIMIT 10
         "#,
-        )
-        .fetch_all(pool)
-        .await?;
+    )
+    .fetch_all(pool)
+    .await?;
 
     Ok(rows
         .into_iter()
         .map(
-            |(id, sport_type, started_at, distance_m, duration_s, elevation_gain_m, tss, intensity_factor, bilan, route_thumb_svg)| {
+            |(
+                id,
+                sport_type,
+                started_at,
+                distance_m,
+                duration_s,
+                elevation_gain_m,
+                tss,
+                intensity_factor,
+                bilan,
+                route_thumb_svg,
+            )| {
                 let route_svg = route_thumb_svg.filter(|s| !s.is_empty());
                 ActivityRow {
                     id,
@@ -250,7 +332,10 @@ struct CalendarPlanned {
     done: bool,
 }
 
-async fn fetch_calendar_planned(pool: &SqlitePool, ath: &crate::workout::Athlete) -> anyhow::Result<Vec<CalendarPlanned>> {
+async fn fetch_calendar_planned(
+    pool: &SqlitePool,
+    ath: &crate::workout::Athlete,
+) -> anyhow::Result<Vec<CalendarPlanned>> {
     let start = calendar_window_start(chrono::Utc::now().date_naive());
     let end = start + chrono::Duration::weeks(CALENDAR_WEEKS_SPAN);
     let planned = crate::planned::list_between(pool, start, end).await?;
@@ -260,7 +345,11 @@ async fn fetch_calendar_planned(pool: &SqlitePool, ath: &crate::workout::Athlete
         let (minutes, tss) = serde_json::from_str::<crate::workout::Workout>(&p.steps_json)
             .map(|w| w.load_estimate(ath))
             .unwrap_or((0.0, 0.0));
-        let intensity = if minutes > 0.0 { (tss / (minutes / 60.0) / 100.0).sqrt() } else { 0.0 };
+        let intensity = if minutes > 0.0 {
+            (tss / (minutes / 60.0) / 100.0).sqrt()
+        } else {
+            0.0
+        };
         let (done,): (bool,) = sqlx::query_as(
             "SELECT EXISTS(SELECT 1 FROM activities WHERE started_at >= ?1 AND started_at < date(?1, '+1 day'))",
         )
@@ -305,14 +394,16 @@ async fn fetch_calendar_activities(pool: &SqlitePool) -> anyhow::Result<Vec<Cale
 
     Ok(rows
         .into_iter()
-        .map(|(id, sport_type, date, distance_m, tss, intensity_factor)| CalendarActivity {
-            id,
-            is_run: crate::metrics::is_run(&sport_type),
-            date,
-            distance_km: distance_m / 1000.0,
-            tss,
-            intensity_factor,
-        })
+        .map(
+            |(id, sport_type, date, distance_m, tss, intensity_factor)| CalendarActivity {
+                id,
+                is_run: crate::metrics::is_run(&sport_type),
+                date,
+                distance_km: distance_m / 1000.0,
+                tss,
+                intensity_factor,
+            },
+        )
         .collect())
 }
 
@@ -361,10 +452,16 @@ fn render_calendar_html(activities: &[CalendarActivity], planned: &[CalendarPlan
             let color = if a.is_run {
                 RUN_COLOR
             } else {
-                a.intensity_factor.map(zone_color_for_intensity).unwrap_or("#9ca3af")
+                a.intensity_factor
+                    .map(zone_color_for_intensity)
+                    .unwrap_or("#9ca3af")
             };
             // Z4/Seuil (yellow) is too light for white text to stay readable.
-            let text_color = if color == ZONE_COLORS[3] { "#1f2430" } else { "#fff" };
+            let text_color = if color == ZONE_COLORS[3] {
+                "#1f2430"
+            } else {
+                "#fff"
+            };
             serde_json::json!({
                 "title": title,
                 "extendedProps": { "l1": line1, "l2": line2 },
@@ -422,12 +519,14 @@ async fn fetch_latest_digest(pool: &SqlitePool) -> anyhow::Result<Option<DigestR
     )
     .fetch_optional(pool)
     .await?;
-    Ok(row.map(|(date, free_text, llm_response_json, llm_response_text)| DigestRow {
-        date,
-        free_text,
-        llm_response_json,
-        llm_response_text,
-    }))
+    Ok(row.map(
+        |(date, free_text, llm_response_json, llm_response_text)| DigestRow {
+            date,
+            free_text,
+            llm_response_json,
+            llm_response_text,
+        },
+    ))
 }
 
 fn escape_html(s: &str) -> String {
@@ -443,15 +542,51 @@ struct GlossaryTerm {
 }
 
 const GLOSSARY: &[GlossaryTerm] = &[
-    GlossaryTerm { acronym: "TSS", full_name: "Training Stress Score", definition: "Charge d'une séance, combine intensité et durée." },
-    GlossaryTerm { acronym: "hrTSS", full_name: "Heart-rate TSS", definition: "TSS estimé à partir de la fréquence cardiaque (charge TRIMP rapportée à une heure à la FC seuil = 100). Utilisé pour la course à pied, qui s'additionne au TSS puissance du vélo dans CTL/ATL/TSB." },
-    GlossaryTerm { acronym: "IF", full_name: "Intensity Factor", definition: "Intensité relative de la séance (NP ÷ FTP)." },
-    GlossaryTerm { acronym: "NP", full_name: "Normalized Power", definition: "Puissance normalisée, pondère les pics d'effort plus que la moyenne brute." },
-    GlossaryTerm { acronym: "VI", full_name: "Variability Index", definition: "Régularité de l'effort (NP ÷ puissance moyenne) ; proche de 1 = effort stable." },
-    GlossaryTerm { acronym: "CTL", full_name: "Chronic Training Load", definition: "Charge chronique ('forme'), moyenne mobile ~42 jours du TSS." },
-    GlossaryTerm { acronym: "ATL", full_name: "Acute Training Load", definition: "Charge aiguë ('fatigue'), moyenne mobile ~7 jours du TSS." },
-    GlossaryTerm { acronym: "TSB", full_name: "Training Stress Balance", definition: "Fraîcheur, CTL moins ATL. Négatif = fatigué, positif = reposé." },
-    GlossaryTerm { acronym: "FTP", full_name: "Functional Threshold Power", definition: "Puissance seuil, tenable environ 1h." },
+    GlossaryTerm {
+        acronym: "TSS",
+        full_name: "Training Stress Score",
+        definition: "Charge d'une séance, combine intensité et durée.",
+    },
+    GlossaryTerm {
+        acronym: "hrTSS",
+        full_name: "Heart-rate TSS",
+        definition: "TSS estimé à partir de la fréquence cardiaque (charge TRIMP rapportée à une heure à la FC seuil = 100). Utilisé pour la course à pied, qui s'additionne au TSS puissance du vélo dans CTL/ATL/TSB.",
+    },
+    GlossaryTerm {
+        acronym: "IF",
+        full_name: "Intensity Factor",
+        definition: "Intensité relative de la séance (NP ÷ FTP).",
+    },
+    GlossaryTerm {
+        acronym: "NP",
+        full_name: "Normalized Power",
+        definition: "Puissance normalisée, pondère les pics d'effort plus que la moyenne brute.",
+    },
+    GlossaryTerm {
+        acronym: "VI",
+        full_name: "Variability Index",
+        definition: "Régularité de l'effort (NP ÷ puissance moyenne) ; proche de 1 = effort stable.",
+    },
+    GlossaryTerm {
+        acronym: "CTL",
+        full_name: "Chronic Training Load",
+        definition: "Charge chronique ('forme'), moyenne mobile ~42 jours du TSS.",
+    },
+    GlossaryTerm {
+        acronym: "ATL",
+        full_name: "Acute Training Load",
+        definition: "Charge aiguë ('fatigue'), moyenne mobile ~7 jours du TSS.",
+    },
+    GlossaryTerm {
+        acronym: "TSB",
+        full_name: "Training Stress Balance",
+        definition: "Fraîcheur, CTL moins ATL. Négatif = fatigué, positif = reposé.",
+    },
+    GlossaryTerm {
+        acronym: "FTP",
+        full_name: "Functional Threshold Power",
+        definition: "Puissance seuil, tenable environ 1h.",
+    },
 ];
 
 /// Wraps every standalone occurrence of a glossary acronym in `<abbr
@@ -462,12 +597,19 @@ const GLOSSARY: &[GlossaryTerm] = &[
 fn annotate_acronyms(escaped_text: &str) -> String {
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| {
-        let alternation = GLOSSARY.iter().map(|t| t.acronym).collect::<Vec<_>>().join("|");
+        let alternation = GLOSSARY
+            .iter()
+            .map(|t| t.acronym)
+            .collect::<Vec<_>>()
+            .join("|");
         Regex::new(&format!(r"\b({alternation})\b")).unwrap()
     });
     re.replace_all(escaped_text, |caps: &regex::Captures| {
         let matched = &caps[1];
-        let term = GLOSSARY.iter().find(|t| t.acronym == matched).expect("regex only matches glossary acronyms");
+        let term = GLOSSARY
+            .iter()
+            .find(|t| t.acronym == matched)
+            .expect("regex only matches glossary acronyms");
         format!(
             "<abbr data-tip=\"{} — {}\">{matched}</abbr>",
             term.full_name,
@@ -498,12 +640,28 @@ fn format_step_target(t: &serde_json::Value) -> String {
     let kind = t.get("type").and_then(|k| k.as_str());
     if kind == Some("hr_zone") || kind == Some("power_zone") {
         let zone = t.get("zone").and_then(|z| z.as_u64()).unwrap_or(0);
-        return format!("Z{zone} {}", if kind == Some("hr_zone") { "FC" } else { "puissance" });
+        return format!(
+            "Z{zone} {}",
+            if kind == Some("hr_zone") {
+                "FC"
+            } else {
+                "puissance"
+            }
+        );
     }
     if kind == Some("pace_range") {
-        let pace = |k: &str| t.get(k).and_then(|v| v.as_f64()).map(format::format_pace_secs).unwrap_or_default();
+        let pace = |k: &str| {
+            t.get(k)
+                .and_then(|v| v.as_f64())
+                .map(format::format_pace_secs)
+                .unwrap_or_default()
+        };
         let (fast, slow) = (pace("low"), pace("high"));
-        return if fast == slow { format!("{fast} /km") } else { format!("{fast}–{slow} /km") };
+        return if fast == slow {
+            format!("{fast} /km")
+        } else {
+            format!("{fast}–{slow} /km")
+        };
     }
     let unit = if kind == Some("hr_range") { "bpm" } else { "W" };
     let low = t.get("low").and_then(|l| l.as_f64()).unwrap_or(0.0);
@@ -523,8 +681,11 @@ fn render_workout_steps(steps: &[serde_json::Value]) -> String {
         let step_type = step.get("type").and_then(|t| t.as_str()).unwrap_or("?");
         if step_type == "repeat" {
             let count = step.get("count").and_then(|c| c.as_u64()).unwrap_or(1);
-            let inner: Vec<serde_json::Value> =
-                step.get("steps").and_then(|s| s.as_array()).cloned().unwrap_or_default();
+            let inner: Vec<serde_json::Value> = step
+                .get("steps")
+                .and_then(|s| s.as_array())
+                .cloned()
+                .unwrap_or_default();
             out += &format!(
                 "<li class=\"step step-repeat\"><span class=\"step-kind\">🔁 ×{count}</span>{}</li>",
                 render_workout_steps(&inner)
@@ -544,16 +705,28 @@ fn render_workout_steps(steps: &[serde_json::Value]) -> String {
             .and_then(|v| v.as_str())
             .map(crate::workout::parse_minutes)
             .unwrap_or(0.0);
-        let mut chips = format!("<span class=\"chip\" title=\"Durée\">⏱ {}</span>", format_step_duration(minutes));
+        let mut chips = format!(
+            "<span class=\"chip\" title=\"Durée\">⏱ {}</span>",
+            format_step_duration(minutes)
+        );
         if let Some(t) = step.get("target") {
-            chips += &format!("<span class=\"chip chip-target\" title=\"Cible\">🎯 {}</span>", escape_html(&format_step_target(t)));
+            chips += &format!(
+                "<span class=\"chip chip-target\" title=\"Cible\">🎯 {}</span>",
+                escape_html(&format_step_target(t))
+            );
         }
         match step.get("terrain").and_then(|t| t.as_str()) {
             Some("montée") => chips += "<span class=\"chip\" title=\"Terrain\">⛰ montée</span>",
-            Some("vallonné") => chips += "<span class=\"chip\" title=\"Terrain\">〰 vallonné</span>",
+            Some("vallonné") => {
+                chips += "<span class=\"chip\" title=\"Terrain\">〰 vallonné</span>"
+            }
             _ => {}
         }
-        if let Some(note) = step.get("note").and_then(|n| n.as_str()).filter(|n| !n.trim().is_empty()) {
+        if let Some(note) = step
+            .get("note")
+            .and_then(|n| n.as_str())
+            .filter(|n| !n.trim().is_empty())
+        {
             chips += &format!("<span class=\"step-note\">📝 {}</span>", escape_html(note));
         }
         out += &format!(
@@ -620,7 +793,13 @@ const ZONE_COLORS: [&str; 7] = [
     "#9ca3af", "#3b82f6", "#22c55e", "#eab308", "#f97316", "#dc2626", "#a855f7",
 ];
 const ZONE_NAMES: [&str; 7] = [
-    "Récupération active", "Endurance", "Tempo", "Seuil", "VO2max", "Capacité anaérobie", "Neuromusculaire",
+    "Récupération active",
+    "Endurance",
+    "Tempo",
+    "Seuil",
+    "VO2max",
+    "Capacité anaérobie",
+    "Neuromusculaire",
 ];
 // Must stay in sync with metrics::power_zone's %FTP boundaries.
 const ZONE_BOUNDS: [f64; 8] = [0.0, 0.55, 0.75, 0.90, 1.05, 1.20, 1.50, f64::INFINITY];
@@ -654,7 +833,13 @@ fn render_zone_bar(zone_secs: &[i64; 7], ftp: f64) -> String {
         .rev()
         .map(|i| {
             let name = format!("Z{} {}", i + 1, ZONE_NAMES[i]);
-            (name, zone_range_watts(i, ftp), ZONE_COLORS[i], zone_secs[i], format!("power_{}", i + 1))
+            (
+                name,
+                zone_range_watts(i, ftp),
+                ZONE_COLORS[i],
+                zone_secs[i],
+                format!("power_{}", i + 1),
+            )
         })
         .collect();
     render_zone_rows(&rows)
@@ -676,7 +861,13 @@ pub(super) fn render_zone_rows(rows: &[(String, String, &str, i64, String)]) -> 
     // squashed, while a dominant zone still fills the bar.
     let max_pct = rows
         .iter()
-        .map(|(_, _, _, s, _)| if total > 0 { *s as f64 / total as f64 * 100.0 } else { 0.0 })
+        .map(|(_, _, _, s, _)| {
+            if total > 0 {
+                *s as f64 / total as f64 * 100.0
+            } else {
+                0.0
+            }
+        })
         .fold(0.0, f64::max);
     let scale = max_pct.max(60.0);
     let items: String = rows
@@ -724,7 +915,10 @@ const TSB_ZONES: [(f64, &str, &str); 6] = [
 const TSB_DISPLAY_BOUNDS: [f64; 7] = [-40.0, -30.0, -10.0, 0.0, 10.0, 25.0, 35.0];
 
 fn tsb_zone_index(tsb: f64) -> usize {
-    TSB_ZONES.iter().position(|(upper, _, _)| tsb < *upper).unwrap_or(5)
+    TSB_ZONES
+        .iter()
+        .position(|(upper, _, _)| tsb < *upper)
+        .unwrap_or(5)
 }
 
 fn render_tsb_gauge(tsb: f64, rest_days_to_next_band: Option<i64>) -> String {
@@ -732,11 +926,16 @@ fn render_tsb_gauge(tsb: f64, rest_days_to_next_band: Option<i64>) -> String {
     let segments: String = (0..6)
         .map(|i| {
             let width_pct = (TSB_DISPLAY_BOUNDS[i + 1] - TSB_DISPLAY_BOUNDS[i]) / span * 100.0;
-            format!(r#"<div class="tsb-gauge-seg" style="width:{width_pct:.3}%;background:{}"></div>"#, TSB_ZONES[i].2)
+            format!(
+                r#"<div class="tsb-gauge-seg" style="width:{width_pct:.3}%;background:{}"></div>"#,
+                TSB_ZONES[i].2
+            )
         })
         .collect();
 
-    let cursor_pct = (tsb.clamp(TSB_DISPLAY_BOUNDS[0], TSB_DISPLAY_BOUNDS[6]) - TSB_DISPLAY_BOUNDS[0]) / span * 100.0;
+    let cursor_pct =
+        (tsb.clamp(TSB_DISPLAY_BOUNDS[0], TSB_DISPLAY_BOUNDS[6]) - TSB_DISPLAY_BOUNDS[0]) / span
+            * 100.0;
 
     let zone_i = tsb_zone_index(tsb);
     let (next_upper, _, current_color) = TSB_ZONES[zone_i];
@@ -775,13 +974,15 @@ const LOAD_CHART_PROJECTION_DAYS: i64 = 7;
 /// same Banister recursion (`recompute_daily_load`) continued with TSS = 0 —
 /// what CTL/ATL/TSB do if no activity is recorded in the coming days.
 async fn load_chart_json(pool: &SqlitePool) -> String {
-    let since = (chrono::Utc::now().date_naive() - chrono::Duration::days(LOAD_CHART_HISTORY_DAYS)).to_string();
-    let rows: Vec<(String, f64, f64, f64, f64)> =
-        sqlx::query_as("SELECT date, tss, ctl, atl, tsb FROM daily_load WHERE date >= ? ORDER BY date")
-            .bind(since)
-            .fetch_all(pool)
-            .await
-            .unwrap_or_default();
+    let since = (chrono::Utc::now().date_naive() - chrono::Duration::days(LOAD_CHART_HISTORY_DAYS))
+        .to_string();
+    let rows: Vec<(String, f64, f64, f64, f64)> = sqlx::query_as(
+        "SELECT date, tss, ctl, atl, tsb FROM daily_load WHERE date >= ? ORDER BY date",
+    )
+    .bind(since)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
     let r1 = |v: f64| (v * 10.0).round() / 10.0;
     let mut points: Vec<serde_json::Value> = rows
         .iter()
@@ -895,16 +1096,13 @@ fn render_activity_card(a: &ActivityRow) -> String {
         .as_deref()
         .map(|t| format!("<p class=\"bilan\">{}</p>", annotate_acronyms(&escape_html(t))))
         .unwrap_or_else(|| format!("<p class=\"bilan pending\">bilan non généré — <a href=\"/activity/{}\">ajouter du contexte et lancer l'analyse</a></p>", a.id));
-    let route = a
-        .route_svg
-        .clone()
-        .unwrap_or_else(|| {
-            format!(
-                "<div class=\"route-thumb route-thumb-empty\" style=\"width:{}px;height:{}px\"></div>",
-                crate::route_thumb::ROUTE_THUMB_W,
-                crate::route_thumb::ROUTE_THUMB_H,
-            )
-        });
+    let route = a.route_svg.clone().unwrap_or_else(|| {
+        format!(
+            "<div class=\"route-thumb route-thumb-empty\" style=\"width:{}px;height:{}px\"></div>",
+            crate::route_thumb::ROUTE_THUMB_W,
+            crate::route_thumb::ROUTE_THUMB_H,
+        )
+    });
 
     let stats = format!(
         r#"<div class="activity-stats">
@@ -924,9 +1122,14 @@ fn render_activity_card(a: &ActivityRow) -> String {
             String::new()
         },
         a.tss
-            .map(|t| format!("<div>🔥 {} {t:.0}</div>", annotate_acronyms(if a.is_run { "hrTSS" } else { "TSS" })))
+            .map(|t| format!(
+                "<div>🔥 {} {t:.0}</div>",
+                annotate_acronyms(if a.is_run { "hrTSS" } else { "TSS" })
+            ))
             .unwrap_or_default(),
-        a.intensity_factor.map(|v| format!("<div>🎯 {} {v:.2}</div>", annotate_acronyms("IF"))).unwrap_or_default(),
+        a.intensity_factor
+            .map(|v| format!("<div>🎯 {} {v:.2}</div>", annotate_acronyms("IF")))
+            .unwrap_or_default(),
     );
 
     // Imported (GPX/FIT) activities use negative ids (see web::import) —
@@ -1004,7 +1207,10 @@ fn render_page(
 ) -> String {
     let zone_bar_html = render_zone_bar(&load.zone_secs, config.ftp_watts as f64);
     let tsb_gauge_html = render_tsb_gauge(load.tsb, load.rest_days_to_next_band);
-    let activity_items = activities.iter().map(render_activity_card).collect::<String>();
+    let activity_items = activities
+        .iter()
+        .map(render_activity_card)
+        .collect::<String>();
     let calendar_html = render_calendar_html(calendar_activities, calendar_planned);
 
     let (sync_label, full_title) = if sync_source == "garmin" {
@@ -1092,18 +1298,24 @@ document.querySelectorAll('.activity-body .bilan:not(.pending)').forEach(functio
 /// "Digest hebdomadaire" card (generate button + latest digest), shown on the
 /// Séances page. `warn` is the `?warn=` flag set by the digest handlers.
 pub(super) async fn digest_section(pool: &SqlitePool, warn: Option<&str>) -> String {
-    let config = fetch_athlete_config(pool).await.expect("athlete_config seeded at startup");
+    let config = fetch_athlete_config(pool)
+        .await
+        .expect("athlete_config seeded at startup");
     let digest = fetch_latest_digest(pool).await.expect("digests query");
-    let has_api_key = crate::settings::fetch(pool).await.map(|s| s.has_llm_key()).unwrap_or(false);
+    let has_api_key = crate::settings::fetch(pool)
+        .await
+        .map(|s| s.has_llm_key())
+        .unwrap_or(false);
     let llm_notice_html = llm_notice(has_api_key, warn);
     let digest_html = render_digest_section(digest.as_ref(), &config.athlete());
     // The workout saved as a template from the latest digest, if it was valid.
-    let template_id: Option<i64> =
-        sqlx::query_scalar("SELECT id FROM workouts WHERE digest_id = (SELECT MAX(id) FROM digests) LIMIT 1")
-            .fetch_optional(pool)
-            .await
-            .ok()
-            .flatten();
+    let template_id: Option<i64> = sqlx::query_scalar(
+        "SELECT id FROM workouts WHERE digest_id = (SELECT MAX(id) FROM digests) LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
     let plan_link = template_id
         .map(|id| format!(r#"<p><a class="btn secondary" href="/planned/new?from={id}">Planifier cette séance &rarr;</a></p>"#))
         .unwrap_or_default();
@@ -1138,16 +1350,16 @@ pub(super) struct WarnQuery {
     pub(super) warn: Option<String>,
 }
 
-/// Shown next to every LLM action. Without an Anthropic key the action
+/// Shown next to every LLM action. Without a key for the chosen provider the action
 /// buttons would only fail silently server-side, so say so up front and point
 /// at the no-API workaround (a report file to paste into any chat assistant).
 /// `warn=llm_failed` is set by the handlers when the API call itself errored.
 pub(super) fn llm_notice(has_api_key: bool, warn: Option<&str>) -> String {
     if warn == Some("llm_failed") {
-        return r#"<p class="warn-banner">L'appel à l'API Anthropic a échoué (clé invalide, quota, réseau…) — voir les logs. Le rapport IA reste téléchargeable pour l'analyser dans un assistant en ligne.</p>"#.to_string();
+        return r#"<p class="warn-banner">L'appel au LLM a échoué (clé invalide, quota, réseau…) — voir les logs. Le rapport IA reste téléchargeable pour l'analyser dans un assistant en ligne.</p>"#.to_string();
     }
     if !has_api_key {
-        return r#"<p class="warn-banner">Aucune clé API Anthropic configurée : la génération automatique est désactivée. Renseigne-la dans <a href="/settings">Paramètres</a>, ou télécharge le rapport IA et colle-le dans Claude, ChatGPT… pour obtenir la même analyse.</p>"#.to_string();
+        return r#"<p class="warn-banner">Aucune clé API pour le fournisseur choisi : la génération automatique est désactivée. Renseigne-la dans <a href="/settings">Paramètres</a>, ou télécharge le rapport IA et colle-le dans Claude, ChatGPT… pour obtenir la même analyse.</p>"#.to_string();
     }
     String::new()
 }
@@ -1157,7 +1369,10 @@ pub(super) fn markdown_download(filename: &str, body: String) -> axum::response:
     use axum::response::IntoResponse;
     (
         [
-            (axum::http::header::CONTENT_TYPE, "text/markdown; charset=utf-8".to_string()),
+            (
+                axum::http::header::CONTENT_TYPE,
+                "text/markdown; charset=utf-8".to_string(),
+            ),
             (
                 axum::http::header::CONTENT_DISPOSITION,
                 format!("attachment; filename=\"{filename}\""),
@@ -1174,10 +1389,18 @@ async fn dashboard(State(state): State<AppState>) -> Html<String> {
         .expect("athlete_config seeded at startup");
     // Single-row read of the precomputed summary; only rebuilt on the first
     // page load of a new day (see `metrics::dashboard_summary`).
-    let load = crate::metrics::dashboard_summary(&state.pool).await.expect("dashboard summary");
-    let activities = fetch_recent_activities(&state.pool).await.expect("activities query");
-    let calendar_activities = fetch_calendar_activities(&state.pool).await.expect("calendar query");
-    let calendar_planned = fetch_calendar_planned(&state.pool, &config.athlete()).await.expect("planned query");
+    let load = crate::metrics::dashboard_summary(&state.pool)
+        .await
+        .expect("dashboard summary");
+    let activities = fetch_recent_activities(&state.pool)
+        .await
+        .expect("activities query");
+    let calendar_activities = fetch_calendar_activities(&state.pool)
+        .await
+        .expect("calendar query");
+    let calendar_planned = fetch_calendar_planned(&state.pool, &config.athlete())
+        .await
+        .expect("planned query");
     let sync_source = crate::settings::fetch(&state.pool)
         .await
         .map(|settings| settings.sync_source)
@@ -1205,10 +1428,10 @@ async fn trigger_digest(State(state): State<AppState>, Form(form): Form<DigestFo
         return Redirect::to("/workouts");
     };
     if !settings.has_llm_key() {
-        tracing::warn!("digest requested without an Anthropic API key, skipping LLM call");
+        tracing::warn!("digest requested without an API key, skipping LLM call");
         return Redirect::to("/workouts?warn=no_api_key");
     }
-    let client = crate::llm::AnthropicClient::new(settings.anthropic_api_key.clone());
+    let client = crate::llm::ProviderClient::from_settings(&settings);
     let free_text = (!form.free_text.trim().is_empty()).then_some(form.free_text.as_str());
     if let Err(err) = crate::digest::generate(
         &state.pool,
@@ -1227,7 +1450,10 @@ async fn trigger_digest(State(state): State<AppState>, Form(form): Form<DigestFo
 
 /// No-API alternative to `trigger_digest`: same prompt + same data, as a
 /// markdown file to paste into any chat assistant.
-async fn digest_report(State(state): State<AppState>, Form(form): Form<DigestForm>) -> axum::response::Response {
+async fn digest_report(
+    State(state): State<AppState>,
+    Form(form): Form<DigestForm>,
+) -> axum::response::Response {
     use axum::response::IntoResponse;
     let settings = match crate::settings::fetch(&state.pool).await {
         Ok(s) => s,
@@ -1237,7 +1463,8 @@ async fn digest_report(State(state): State<AppState>, Form(form): Form<DigestFor
         }
     };
     let free_text = (!form.free_text.trim().is_empty()).then_some(form.free_text.as_str());
-    match crate::digest::build_user_message(&state.pool, free_text, &settings.athlete_profile).await {
+    match crate::digest::build_user_message(&state.pool, free_text, &settings.athlete_profile).await
+    {
         Ok(user_message) => {
             let body = crate::report::render(
                 "Digest hebdomadaire",
@@ -1294,7 +1521,11 @@ mod tsb_gauge_tests {
 
     #[test]
     fn band_bounds_match_metrics_rest_estimate_bounds() {
-        let web: Vec<f64> = TSB_ZONES.iter().map(|(upper, _, _)| *upper).filter(|u| u.is_finite()).collect();
+        let web: Vec<f64> = TSB_ZONES
+            .iter()
+            .map(|(upper, _, _)| *upper)
+            .filter(|u| u.is_finite())
+            .collect();
         assert_eq!(web, crate::metrics::TSB_BAND_UPPER_BOUNDS.to_vec());
     }
 }

@@ -31,7 +31,10 @@ pub async fn import_activity(State(state): State<AppState>, mut multipart: Multi
     } else if lower.ends_with(".gpx") {
         crate::importer::parse_gpx(&bytes)
     } else {
-        tracing::warn!(file_name, "activity import: unsupported file extension (expected .fit or .gpx)");
+        tracing::warn!(
+            file_name,
+            "activity import: unsupported file extension (expected .fit or .gpx)"
+        );
         return Redirect::to("/");
     };
 
@@ -52,7 +55,11 @@ pub async fn import_activity(State(state): State<AppState>, mut multipart: Multi
     match insert_imported_activity(&state.pool, &title, &parsed).await {
         Ok(id) => {
             if let Err(err) = crate::metrics::run(&state.pool).await {
-                tracing::error!(?err, activity_id = id, "activity import: metrics recompute failed");
+                tracing::error!(
+                    ?err,
+                    activity_id = id,
+                    "activity import: metrics recompute failed"
+                );
             }
             Redirect::to(&format!("/activity/{id}"))
         }
@@ -105,7 +112,8 @@ async fn insert_imported_activity(
         .bind(streams_json)
         .execute(pool)
         .await?;
-    let route_points = crate::route_thumb::compute_points(&streams_json_for_points).unwrap_or_default();
+    let route_points =
+        crate::route_thumb::compute_points(&streams_json_for_points).unwrap_or_default();
     sqlx::query("UPDATE activities SET route_thumb_svg = ?, route_points_json = ? WHERE id = ?")
         .bind(route_thumb_svg)
         .bind(route_points)

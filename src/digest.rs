@@ -1,5 +1,5 @@
 use crate::llm::LlmClient;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::SqlitePool;
 
 /// Seeded into `settings.digest_system_prompt` on first boot — editable
@@ -33,7 +33,13 @@ fn structured_summary(
     let total: i64 = zone_secs.iter().sum();
     let zone_pct: Vec<f64> = zone_secs
         .iter()
-        .map(|s| if total > 0 { *s as f64 / total as f64 * 100.0 } else { 0.0 })
+        .map(|s| {
+            if total > 0 {
+                *s as f64 / total as f64 * 100.0
+            } else {
+                0.0
+            }
+        })
         .collect();
 
     json!({
@@ -63,7 +69,12 @@ fn strip_code_fence(s: &str) -> &str {
 /// 1h, 1h30, 1:30), so a digest workout is measured exactly like one that is
 /// later planned from it.
 fn parse_minutes(duration: &Value) -> f64 {
-    crate::workout::parse_minutes(duration.get("value").and_then(|v| v.as_str()).unwrap_or("0min"))
+    crate::workout::parse_minutes(
+        duration
+            .get("value")
+            .and_then(|v| v.as_str())
+            .unwrap_or("0min"),
+    )
 }
 
 /// Rough speed model calibrated on typical road-cycling paces: ~30km/h
@@ -112,7 +123,10 @@ fn estimate_distance_km(steps: &[Value], ftp: f64) -> f64 {
                 continue;
             };
             let dur_min = parse_minutes(duration);
-            let terrain = step.get("terrain").and_then(|t| t.as_str()).unwrap_or("plat");
+            let terrain = step
+                .get("terrain")
+                .and_then(|t| t.as_str())
+                .unwrap_or("plat");
             let frac = step_power_frac(step, ftp);
             total += dur_min / 60.0 * speed_kmh(frac, terrain);
         }
@@ -153,7 +167,9 @@ async fn fetch_context(pool: &SqlitePool) -> anyhow::Result<(f64, f64, f64, f64,
         ctl,
         atl,
         tsb,
-        [zones.0, zones.1, zones.2, zones.3, zones.4, zones.5, zones.6],
+        [
+            zones.0, zones.1, zones.2, zones.3, zones.4, zones.5, zones.6,
+        ],
     ))
 }
 
@@ -230,10 +246,16 @@ pub async fn generate<C: LlmClient>(
                     // can't be edited or planned later isn't saved as a template.
                     Ok(w) => match w.validate() {
                         None => workout_to_persist = Some(workout_value),
-                        Some(reason) => tracing::warn!(reason, "digest workout failed validation, skipping workouts insert"),
+                        Some(reason) => tracing::warn!(
+                            reason,
+                            "digest workout failed validation, skipping workouts insert"
+                        ),
                     },
                     Err(err) => {
-                        tracing::warn!(?err, "digest workout JSON didn't match the Workout schema, skipping workouts insert");
+                        tracing::warn!(
+                            ?err,
+                            "digest workout JSON didn't match the Workout schema, skipping workouts insert"
+                        );
                     }
                 }
             }
@@ -264,13 +286,19 @@ pub async fn generate<C: LlmClient>(
     .await?;
 
     if let Some(workout_value) = workout_to_persist {
-        let name = workout_value.get("name").and_then(|n| n.as_str()).unwrap_or("Séance").to_string();
-        sqlx::query("INSERT INTO workouts (name, steps_json, source, digest_id) VALUES (?, ?, 'digest', ?)")
-            .bind(name)
-            .bind(workout_value.to_string())
-            .bind(insert_result.last_insert_rowid())
-            .execute(pool)
-            .await?;
+        let name = workout_value
+            .get("name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("Séance")
+            .to_string();
+        sqlx::query(
+            "INSERT INTO workouts (name, steps_json, source, digest_id) VALUES (?, ?, 'digest', ?)",
+        )
+        .bind(name)
+        .bind(workout_value.to_string())
+        .bind(insert_result.last_insert_rowid())
+        .execute(pool)
+        .await?;
     }
 
     Ok(())
@@ -290,12 +318,21 @@ mod tests {
             ]}
         ]});
         // What the digest stores must go through the planner unchanged...
-        let ath = crate::workout::Athlete { ftp_watts: 205.0, hr_rest: 53.0, hr_max: 192.0, run_threshold_pace_s: 0.0 };
-        let prepared = crate::planned::prepare(&w, &ath, crate::planned::Sport::Cycling).expect("planner accepts the digest format");
+        let ath = crate::workout::Athlete {
+            ftp_watts: 205.0,
+            hr_rest: 53.0,
+            hr_max: 192.0,
+            run_threshold_pace_s: 0.0,
+        };
+        let prepared = crate::planned::prepare(&w, &ath, crate::planned::Sport::Cycling)
+            .expect("planner accepts the digest format");
         assert_eq!(prepared.name, "Sweet spot");
         // ...and "1h" must count (the old digest parser read it as 0 minutes).
         let km = estimate_distance_km(w["steps"].as_array().unwrap(), 205.0);
-        assert!(km > 60.0, "2x1h at ~30 km/h should be well over 60 km, got {km}");
+        assert!(
+            km > 60.0,
+            "2x1h at ~30 km/h should be well over 60 km, got {km}"
+        );
     }
 
     #[test]
@@ -368,10 +405,12 @@ mod tests {
     #[tokio::test]
     async fn successful_workout_response_also_persists_to_workouts_table() {
         let pool = test_pool().await;
-        sqlx::query("INSERT INTO athlete_config (id, ftp_watts, hr_max, hr_rest) VALUES (1, 205, 192, 53)")
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO athlete_config (id, ftp_watts, hr_max, hr_rest) VALUES (1, 205, 192, 53)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
 
         let response = json!({
             "workout": {
@@ -387,7 +426,15 @@ mod tests {
         .to_string();
         let client = FakeClient { response };
 
-        generate(&pool, &client, None, "profil de test", DEFAULT_SYSTEM_PROMPT).await.unwrap();
+        generate(
+            &pool,
+            &client,
+            None,
+            "profil de test",
+            DEFAULT_SYSTEM_PROMPT,
+        )
+        .await
+        .unwrap();
 
         let (name, source, digest_id): (String, String, Option<i64>) =
             sqlx::query_as("SELECT name, source, digest_id FROM workouts")
@@ -402,10 +449,12 @@ mod tests {
     #[tokio::test]
     async fn workout_json_not_matching_schema_skips_workouts_insert_but_digest_still_stores() {
         let pool = test_pool().await;
-        sqlx::query("INSERT INTO athlete_config (id, ftp_watts, hr_max, hr_rest) VALUES (1, 205, 192, 53)")
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO athlete_config (id, ftp_watts, hr_max, hr_rest) VALUES (1, 205, 192, 53)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
 
         // Valid JSON, but "steps" is missing entirely — fails Workout's schema.
         let response = json!({
@@ -415,13 +464,24 @@ mod tests {
         .to_string();
         let client = FakeClient { response };
 
-        generate(&pool, &client, None, "profil de test", DEFAULT_SYSTEM_PROMPT).await.unwrap();
+        generate(
+            &pool,
+            &client,
+            None,
+            "profil de test",
+            DEFAULT_SYSTEM_PROMPT,
+        )
+        .await
+        .unwrap();
 
         let (digest_count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM digests")
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(digest_count, 1, "digest must still store even when workout schema mismatches");
+        assert_eq!(
+            digest_count, 1,
+            "digest must still store even when workout schema mismatches"
+        );
 
         let (workout_count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM workouts")
             .fetch_one(&pool)
