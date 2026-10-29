@@ -36,6 +36,7 @@ pub async fn import(State(state): State<AppState>) -> Response {
 struct SegmentRow {
     id: i64,
     name: String,
+    source: String,
     distance_m: f64,
     elevation_gain_m: f64,
     efforts: i64,
@@ -162,8 +163,8 @@ fn extract_geometry(streams_json: &str, start_s: f64, end_s: f64) -> Option<Geom
 }
 
 async fn render(state: &AppState, selected: Option<i64>, error: Option<&str>) -> String {
-    let rows: Vec<(i64, String, f64, f64, i64, Option<f64>, Option<String>)> = sqlx::query_as(
-        "SELECT r.id, r.name, r.distance_m, r.elevation_gain_m, COUNT(e.id), MAX(e.avg_power_w), MAX(a.started_at) \
+    let rows: Vec<(i64, String, String, f64, f64, i64, Option<f64>, Option<String>)> = sqlx::query_as(
+        "SELECT r.id, r.name, r.source, r.distance_m, r.elevation_gain_m, COUNT(e.id), MAX(e.avg_power_w), MAX(a.started_at) \
          FROM reference_segments r \
          LEFT JOIN segment_efforts e ON e.reference_segment_id = r.id \
          LEFT JOIN activities a ON a.id = e.activity_id \
@@ -175,9 +176,10 @@ async fn render(state: &AppState, selected: Option<i64>, error: Option<&str>) ->
     let segments: Vec<SegmentRow> = rows
         .into_iter()
         .map(
-            |(id, name, distance_m, elevation_gain_m, efforts, best_power_w, last_at)| SegmentRow {
+            |(id, name, source, distance_m, elevation_gain_m, efforts, best_power_w, last_at)| SegmentRow {
                 id,
                 name,
+                source,
                 distance_m,
                 elevation_gain_m,
                 efforts,
@@ -192,15 +194,16 @@ async fn render(state: &AppState, selected: Option<i64>, error: Option<&str>) ->
         .unwrap_or_default();
 
     let list_html = if segments.is_empty() {
-        r#"<p class="hint">Aucun segment synchronisé. Mets tes segments en favoris sur Strava puis clique sur « Importer depuis Strava ».</p>"#
+        r#"<p class="hint">Aucun segment. Les favoris Strava s'importent avec le bouton ci-dessus. Les côtes répétées détectées dans les traces apparaissent ici quand la détection automatique est activée dans les paramètres.</p>"#
             .to_string()
     } else {
         let body: String = segments
             .iter()
             .map(|s| {
                 let active = if Some(s.id) == selected { r#" class="seg-active""# } else { "" };
+                let badge = if s.source == "auto" { " · auto" } else { "" };
                 format!(
-                    r#"<tr{active}><td><a href="/segments?id={id}">{name}</a></td><td>{km:.2} km</td><td>{d:.0} m</td><td>{n}</td><td>{p}</td><td>{last}</td></tr>"#,
+                    r#"<tr{active}><td><a href="/segments?id={id}">{name}</a>{badge}</td><td>{km:.2} km</td><td>{d:.0} m</td><td>{n}</td><td>{p}</td><td>{last}</td></tr>"#,
                     id = s.id,
                     name = escape_html(&s.name),
                     km = s.distance_m / 1000.0,

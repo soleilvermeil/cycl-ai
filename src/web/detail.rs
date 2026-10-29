@@ -35,6 +35,7 @@ struct ActivityDetailRow {
     description: Option<String>,
     source: String,
     external_id: Option<i64>,
+    power_source: Option<String>,
 }
 
 struct ActivityDetail {
@@ -56,6 +57,7 @@ struct ActivityDetail {
     description: Option<String>,
     source: String,
     external_id: Option<i64>,
+    power_estimated: bool,
 }
 
 struct SegmentEffortRow {
@@ -96,7 +98,7 @@ async fn fetch_activity(pool: &SqlitePool, id: i64) -> anyhow::Result<Option<Act
                a.avg_power_w, a.normalized_power_w, a.avg_hr, a.max_hr, a.tss, a.intensity_factor,
                a.zone1_s, a.zone2_s, a.zone3_s, a.zone4_s, a.zone5_s, a.zone6_s, a.zone7_s,
                b.text AS bilan, s.streams_json, a.user_context, a.description,
-               a.source, a.external_id
+               a.source, a.external_id, a.power_source
         FROM activities a
         LEFT JOIN activity_bilans b ON b.activity_id = a.id
         LEFT JOIN activity_streams s ON s.activity_id = a.id
@@ -126,8 +128,9 @@ async fn fetch_activity(pool: &SqlitePool, id: i64) -> anyhow::Result<Option<Act
         streams_json: r.streams_json,
         user_context: r.user_context,
         description: r.description,
-        source: r.source,
+        source: r.source.clone(),
         external_id: r.external_id,
+        power_estimated: r.power_source.as_deref() == Some("estimate"),
     }))
 }
 
@@ -153,6 +156,8 @@ async fn fetch_segment_efforts(
         FROM segment_efforts se
         JOIN reference_segments rs ON rs.id = se.reference_segment_id
         WHERE se.activity_id = ?
+          AND (rs.source != 'auto'
+               OR COALESCE((SELECT autodetect_enabled FROM settings WHERE id = 1), 0) = 1)
         "#,
     )
     .bind(activity_id)
@@ -1326,7 +1331,13 @@ pub async fn activity_detail(
             .tss
             .map(|t| {
                 stat_row(
-                    &annotate_acronyms(if activity.is_run { "hrTSS" } else { "TSS" }),
+                    &annotate_acronyms(if activity.is_run {
+                        "hrTSS"
+                    } else if activity.power_estimated {
+                        "TSS estimé"
+                    } else {
+                        "TSS"
+                    }),
                     format!("{t:.0}"),
                 )
             })
@@ -1344,11 +1355,27 @@ pub async fn activity_detail(
         },
         activity
             .avg_power_w
-            .map(|v| stat_row("Puiss. moy.", format!("{v:.0}W")))
+            .map(|v| {
+                stat_row(
+                    if activity.power_estimated {
+                        "Puiss. moy. estimée"
+                    } else {
+                        "Puiss. moy."
+                    },
+                    format!("{v:.0}W"),
+                )
+            })
             .unwrap_or_default(),
         activity
             .normalized_power_w
-            .map(|v| stat_row(&annotate_acronyms("NP"), format!("{v:.0}W")))
+            .map(|v| {
+                let label = if activity.power_estimated {
+                    format!("{} estimée", annotate_acronyms("NP"))
+                } else {
+                    annotate_acronyms("NP")
+                };
+                stat_row(&label, format!("{v:.0}W"))
+            })
             .unwrap_or_default(),
         activity
             .avg_hr

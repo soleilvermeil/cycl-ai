@@ -31,7 +31,7 @@ cp .env.example .env   # ou créer .env à la main, voir « Configuration »
 cargo run -- serve     # dashboard sur http://localhost:3000
 ```
 
-Au premier lancement la base `cyclai.db` est créée et les migrations appliquées. Tout se règle ensuite depuis **Paramètres** (`/settings`) : source de synchro, clés Strava / Garmin / LLM, FTP, FC, profil cycliste, prompts.
+Au premier lancement la base `cyclai.db` est créée et les migrations appliquées. Tout se règle ensuite depuis **Paramètres** (`/settings`) : source de synchro, clés Strava / Garmin / LLM, FTP, FC, profil cycliste, prompts. La détection automatique et l'estimation de puissance y sont aussi, toutes les deux désactivées par défaut.
 
 ### Configuration initiale (`.env`)
 

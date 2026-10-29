@@ -129,6 +129,27 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+        // Post-squash columns added after OpenAI, so the replay below can
+        // apply that migration on a schema that doesn't have them yet.
+        sqlx::query("DROP TABLE activity_insights")
+            .execute(&pool)
+            .await
+            .unwrap();
+        for column in [
+            "ALTER TABLE settings DROP COLUMN autodetect_enabled",
+            "ALTER TABLE settings DROP COLUMN power_estimate_enabled",
+            "ALTER TABLE athlete_config DROP COLUMN rider_weight_kg",
+            "ALTER TABLE athlete_config DROP COLUMN bike_weight_kg",
+            "ALTER TABLE athlete_config DROP COLUMN cda",
+            "ALTER TABLE athlete_config DROP COLUMN crr",
+            "ALTER TABLE activities DROP COLUMN power_source",
+            "ALTER TABLE activities DROP COLUMN workout_name",
+            "ALTER TABLE laps DROP COLUMN lap_trigger",
+            "ALTER TABLE laps DROP COLUMN intensity",
+            "ALTER TABLE reference_segments DROP COLUMN source",
+        ] {
+            sqlx::query(column).execute(&pool).await.unwrap();
+        }
         sqlx::query("DELETE FROM _sqlx_migrations")
             .execute(&pool)
             .await
@@ -156,7 +177,7 @@ mod tests {
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(n, 4); // initial (adopted) + api_keys + garmin_sync + openai
+        assert_eq!(n, 5); // initial (adopted) + api_keys + garmin_sync + openai + autodetect_power
         migrate(&pool).await.unwrap(); // idempotent
     }
 

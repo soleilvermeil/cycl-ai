@@ -334,7 +334,7 @@ async fn update_tss_if(pool: &SqlitePool, ftp: f64) -> anyhow::Result<()> {
         UPDATE activities
         SET intensity_factor = normalized_power_w / ?1,
             tss = (duration_s * normalized_power_w * (normalized_power_w / ?1)) / (?1 * 3600.0) * 100.0,
-            tss_source = 'power'
+            tss_source = CASE WHEN power_source = 'estimate' THEN 'estimate' ELSE 'power' END
         WHERE normalized_power_w IS NOT NULL AND sport_type NOT IN ('Run', 'TrailRun')
         "#,
     )

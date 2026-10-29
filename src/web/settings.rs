@@ -1,6 +1,6 @@
 use super::{AppState, escape_html};
 use axum::extract::State;
-use axum::response::{Html, Redirect};
+use axum::response::{Html, IntoResponse, Redirect, Response};
 use serde::Deserialize;
 
 /// Muted, modern accent presets (name, #rrggbb). The native color input stays
@@ -20,7 +20,7 @@ const THEME_PRESETS: [(&str, &str); 9] = [
 fn page_shell(body: &str) -> String {
     let header = super::layout::page_header(
         "Paramètres",
-        "Clés, profil physiologique, profil cycliste et prompts du LLM.",
+        "Clés, profil physiologique, détection automatique, estimation de puissance et prompts du LLM.",
         "",
     );
     let content = format!("{header}{body}");
@@ -33,7 +33,10 @@ input.color-input { width: 36px; height: 36px; padding: 2px; margin: 0; cursor: 
 .swatch:hover { transform: scale(1.1); border-color: var(--card-bg); }
 .swatch.selected { box-shadow: 0 0 0 2px var(--text); }
 .swatch-custom { display: inline-flex; align-items: center; gap: 0.4rem; margin-left: 0.5rem; }
-.swatch-custom .hint { margin: 0; }")
+.swatch-custom .hint { margin: 0; }
+label.check { display: flex; align-items: center; gap: 0.5rem; color: var(--text); }
+.setting-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.setting-actions form { margin: 0; }")
         .render()
 }
 
@@ -65,6 +68,27 @@ async fn render_page(pool: &sqlx::SqlitePool, error: Option<&str>) -> Html<Strin
     } else {
         String::new()
     };
+    let (rider_kg, bike_kg, cda, crr): (f64, f64, f64, f64) = sqlx::query_as(
+        "SELECT rider_weight_kg, bike_weight_kg, cda, crr FROM athlete_config WHERE id = 1",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or((0.0, 0.0, 0.0, 0.0));
+    let auto_segments: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM reference_segments WHERE source = 'auto'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
+    let auto_insights: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM activity_insights")
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+    let estimated_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM activities WHERE power_source = 'estimate'")
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
 
     let error_html = error
         .map(|e| format!(r#"<p class="form-error">{}</p>"#, escape_html(e)))
@@ -170,6 +194,54 @@ document.querySelectorAll('.swatch').forEach(function(b) {{
 </section>
 
 <section>
+<h2>Détection automatique</h2>
+<p class="hint">Désactivée par défaut. Une fois activée, le recalcul repère les côtes faites au moins deux fois (elles deviennent des segments locaux), les blocs d'effort dans la puissance, le type de laps (split automatique ou séance) et une comparaison aux sorties récentes de durée ou de distance proche. Ces lectures sont ajoutées au bilan. Les segments importés depuis Strava ne sont pas modifiés. Décocher n'efface rien : les lectures déjà stockées restent jusqu'à « Effacer », mais elles ne sont plus injectées dans les bilans ni rematchées tant que l'option est coupée.</p>
+<p>{auto_segments} segment(s) auto-détecté(s) · {auto_insights} sortie(s) avec une lecture.</p>
+<div class="setting-actions">
+<form method="post" action="/settings/autodetect">
+  <label class="check"><input type="checkbox" name="enabled" value="1"{auto_checked}> Activer</label>
+  <button type="submit">Enregistrer</button>
+</form>
+<form method="post" action="/settings/autodetect/recompute">
+  <button type="submit" class="secondary">Recalculer</button>
+</form>
+<form method="post" action="/settings/autodetect/clear" onsubmit="return confirm('Effacer les segments et les lectures auto-détectés ?');">
+  <button type="submit" class="secondary">Effacer</button>
+</form>
+</div>
+</section>
+
+<section>
+<h2>Estimation de puissance</h2>
+<p class="hint">Désactivée par défaut. Pour une sortie vélo sans capteur de puissance, estime les watts à partir de la vitesse et de la pente (résistance au roulement, air, gravité, accélération). Il faut le poids du cycliste, le poids du vélo, le CdA (surface de traînée : environ 0,32 en haut de cintre, 0,28 en bas) et le Crr (environ 0,004 en pneu course, 0,005 en entraînement). Les courses à pied et les sorties qui ont déjà un capteur ne sont pas modifiées. Enregistrer avec l'option activée lance le calcul. Décocher laisse les watts estimés en place jusqu'à « Effacer ».</p>
+<p>{estimated_count} sortie(s) avec une puissance estimée.</p>
+<form method="post" action="/settings/power">
+  <label class="check"><input type="checkbox" name="enabled" value="1"{power_checked}> Activer</label>
+  <label>Poids du cycliste (kg)
+  <input type="text" inputmode="decimal" name="rider_weight_kg" value="{rider_weight}" placeholder="75">
+  </label>
+  <label>Poids du vélo (kg)
+  <input type="text" inputmode="decimal" name="bike_weight_kg" value="{bike_weight}" placeholder="8">
+  </label>
+  <label>CdA (m²)
+  <input type="text" inputmode="decimal" name="cda" value="{cda}" placeholder="0.32">
+  </label>
+  <label>Crr
+  <input type="text" inputmode="decimal" name="crr" value="{crr}" placeholder="0.005">
+  </label>
+  <button type="submit">Enregistrer</button>
+</form>
+<div class="setting-actions">
+<form method="post" action="/settings/power/recompute">
+  <button type="submit" class="secondary">Recalculer</button>
+</form>
+<form method="post" action="/settings/power/clear" onsubmit="return confirm('Retirer la puissance estimée de toutes les sorties ?');">
+  <button type="submit" class="secondary">Effacer les estimations</button>
+</form>
+</div>
+</section>
+
+<section>
 <h2>Profil cycliste</h2>
 <p class="hint">Réinjecté dans chaque prompt envoyé au LLM (bilans et digest hebdomadaire) : FTP/zones, objectifs, équipement, contraintes...</p>
 <form method="post" action="/settings/profile">
@@ -216,6 +288,15 @@ document.querySelectorAll('.swatch').forEach(function(b) {{
         lthr = lthr,
         hr_tss_coef = hr_tss_coef,
         run_pace = run_pace,
+        auto_checked = if settings.autodetect_enabled != 0 { " checked" } else { "" },
+        auto_segments = auto_segments,
+        auto_insights = auto_insights,
+        power_checked = if settings.power_estimate_enabled != 0 { " checked" } else { "" },
+        rider_weight = fmt_num(rider_kg),
+        bike_weight = fmt_num(bike_kg),
+        cda = fmt_num(cda),
+        crr = fmt_num(crr),
+        estimated_count = estimated_count,
         strava_selected = if settings.sync_source == "garmin" { "" } else { " selected" },
         garmin_selected = if settings.sync_source == "garmin" { " selected" } else { "" },
         garmin_api_key = escape_html(&settings.garmin_api_key),
@@ -444,4 +525,224 @@ pub async fn update_digest_prompt(
         .execute(&state.pool)
         .await;
     Redirect::to("/settings")
+}
+
+fn fmt_num(v: f64) -> String {
+    if v <= 0.0 || !v.is_finite() {
+        return String::new();
+    }
+    let s = format!("{v:.4}");
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+fn parse_num(raw: &str) -> f64 {
+    let v: f64 = raw.trim().replace(',', ".").parse().unwrap_or(0.0);
+    if v.is_finite() { v } else { 0.0 }
+}
+
+#[derive(Deserialize)]
+pub struct ToggleForm {
+    #[serde(default)]
+    enabled: String,
+}
+
+pub async fn update_autodetect(
+    State(state): State<AppState>,
+    axum::extract::Form(form): axum::extract::Form<ToggleForm>,
+) -> Redirect {
+    let _ = sqlx::query("UPDATE settings SET autodetect_enabled = ? WHERE id = 1")
+        .bind(if form.enabled == "1" { 1 } else { 0 })
+        .execute(&state.pool)
+        .await;
+    Redirect::to("/settings")
+}
+
+pub async fn recompute_autodetect(State(state): State<AppState>) -> Response {
+    let enabled = crate::settings::fetch(&state.pool)
+        .await
+        .map(|s| s.autodetect_enabled != 0)
+        .unwrap_or(false);
+    if !enabled {
+        return Html(
+            render_page(
+                &state.pool,
+                Some("Activez la détection automatique avant de recalculer."),
+            )
+            .await,
+        )
+        .into_response();
+    }
+    match crate::autodetect::recompute(&state.pool).await {
+        Ok(stats) => {
+            tracing::info!(
+                segments = stats.segments,
+                insights = stats.insights,
+                "autodetect recomputed"
+            );
+            Redirect::to("/settings").into_response()
+        }
+        Err(err) => {
+            tracing::error!(?err, "autodetect recompute failed");
+            Html(render_page(&state.pool, Some("Le recalcul de la détection a échoué.")).await)
+                .into_response()
+        }
+    }
+}
+
+pub async fn clear_autodetect(State(state): State<AppState>) -> Response {
+    match crate::autodetect::clear(&state.pool).await {
+        Ok(()) => Redirect::to("/settings").into_response(),
+        Err(err) => {
+            tracing::error!(?err, "autodetect clear failed");
+            Html(
+                render_page(
+                    &state.pool,
+                    Some("Impossible d'effacer la détection automatique."),
+                )
+                .await,
+            )
+            .into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct PowerForm {
+    #[serde(default)]
+    enabled: String,
+    #[serde(default)]
+    rider_weight_kg: String,
+    #[serde(default)]
+    bike_weight_kg: String,
+    #[serde(default)]
+    cda: String,
+    #[serde(default)]
+    crr: String,
+}
+
+fn model_from_form(form: &PowerForm) -> crate::power_estimate::Model {
+    crate::power_estimate::Model {
+        rider_kg: parse_num(&form.rider_weight_kg),
+        bike_kg: parse_num(&form.bike_weight_kg),
+        cda: parse_num(&form.cda),
+        crr: parse_num(&form.crr),
+    }
+}
+
+async fn save_power_model(
+    pool: &sqlx::SqlitePool,
+    model: crate::power_estimate::Model,
+    enabled: bool,
+) {
+    let _ = sqlx::query(
+        "UPDATE athlete_config SET rider_weight_kg = ?, bike_weight_kg = ?, cda = ?, crr = ?, updated_at = datetime('now') WHERE id = 1",
+    )
+    .bind(model.rider_kg)
+    .bind(model.bike_kg)
+    .bind(model.cda)
+    .bind(model.crr)
+    .execute(pool)
+    .await;
+    let _ = sqlx::query("UPDATE settings SET power_estimate_enabled = ? WHERE id = 1")
+        .bind(if enabled { 1 } else { 0 })
+        .execute(pool)
+        .await;
+}
+
+async fn run_power_estimate(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    crate::power_estimate::apply_all(pool).await?;
+    crate::metrics::run(pool).await?;
+    crate::segments::run(pool).await?;
+    Ok(())
+}
+
+pub async fn update_power_estimate(
+    State(state): State<AppState>,
+    axum::extract::Form(form): axum::extract::Form<PowerForm>,
+) -> Response {
+    let model = model_from_form(&form);
+    let want = form.enabled == "1";
+    if want {
+        if let Some(reason) = model.reject_reason() {
+            save_power_model(&state.pool, model, false).await;
+            return Html(
+                render_page(
+                    &state.pool,
+                    Some(&format!("Estimation non activée : {reason}.")),
+                )
+                .await,
+            )
+            .into_response();
+        }
+    }
+    save_power_model(&state.pool, model, want).await;
+    if want {
+        if let Err(err) = run_power_estimate(&state.pool).await {
+            tracing::error!(?err, "power estimate failed");
+            return Html(
+                render_page(&state.pool, Some("L'estimation de puissance a échoué.")).await,
+            )
+            .into_response();
+        }
+    }
+    Redirect::to("/settings").into_response()
+}
+
+pub async fn recompute_power_estimate(State(state): State<AppState>) -> Response {
+    let enabled = crate::settings::fetch(&state.pool)
+        .await
+        .map(|s| s.power_estimate_enabled != 0)
+        .unwrap_or(false);
+    if !enabled {
+        return Html(
+            render_page(
+                &state.pool,
+                Some("Activez l'estimation de puissance avant de recalculer."),
+            )
+            .await,
+        )
+        .into_response();
+    }
+    let model = crate::power_estimate::load_model(&state.pool).await.ok();
+    if model.is_none_or(|m| m.reject_reason().is_some()) {
+        return Html(
+            render_page(
+                &state.pool,
+                Some("Renseignez le poids, le CdA et le Crr avant de recalculer."),
+            )
+            .await,
+        )
+        .into_response();
+    }
+    match run_power_estimate(&state.pool).await {
+        Ok(()) => Redirect::to("/settings").into_response(),
+        Err(err) => {
+            tracing::error!(?err, "power estimate recompute failed");
+            Html(
+                render_page(
+                    &state.pool,
+                    Some("Le recalcul de la puissance estimée a échoué."),
+                )
+                .await,
+            )
+            .into_response()
+        }
+    }
+}
+
+pub async fn clear_power_estimate(State(state): State<AppState>) -> Response {
+    if let Err(err) = crate::power_estimate::clear(&state.pool).await {
+        tracing::error!(?err, "power estimate clear failed");
+        return Html(
+            render_page(
+                &state.pool,
+                Some("Impossible d'effacer la puissance estimée."),
+            )
+            .await,
+        )
+        .into_response();
+    }
+    let _ = crate::metrics::run(&state.pool).await;
+    let _ = crate::segments::run(&state.pool).await;
+    Redirect::to("/settings").into_response()
 }

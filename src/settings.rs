@@ -22,6 +22,10 @@ pub struct Settings {
     pub garmin_api_key: String,
     /// `strava` or `garmin`. The sync reads only this source.
     pub sync_source: String,
+    /// Repeated climbs, interval blocks and peer comparisons. Off until set.
+    pub autodetect_enabled: i64,
+    /// Physics estimate for rides with no power meter. Off until set.
+    pub power_estimate_enabled: i64,
 }
 
 impl Settings {
@@ -41,7 +45,8 @@ pub async fn fetch(pool: &SqlitePool) -> anyhow::Result<Settings> {
     Ok(sqlx::query_as(
         "SELECT strava_client_id, strava_client_secret, anthropic_api_key, openai_api_key, \
          llm_provider, openai_model, athlete_profile, bilan_system_prompt, digest_system_prompt, \
-         theme_color, theme_mode, garmin_api_key, sync_source FROM settings WHERE id = 1",
+         theme_color, theme_mode, garmin_api_key, sync_source, \
+         autodetect_enabled, power_estimate_enabled FROM settings WHERE id = 1",
     )
     .fetch_one(pool)
     .await?)

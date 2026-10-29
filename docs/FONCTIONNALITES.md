@@ -77,14 +77,14 @@ Matching **100 % local**, indépendant des `segment_efforts` de Strava (décisio
 2. À chaque sync, pour chaque activité, le flux GPS est comparé aux deux extrémités par distance haversine (seuil de **15 m**) ; la portion entre l'entrée et la sortie fournit puissance, vitesse et FC moyennes.
 3. L'historique est traité **chronologiquement** et reconstruit à chaque sync : les deltas (vs record perso, vs moyenne des derniers passages, vs dernier passage) ne comparent un effort qu'à ce qui s'est passé *avant*.
 
-Les efforts apparaissent sur la page de l'activité et alimentent le bilan.
+Les efforts apparaissent sur la page de l'activité et alimentent le bilan. Sans favoris Strava, la détection automatique (réglage, désactivée par défaut) peut créer ses propres segments à partir des côtes répétées dans les traces.
 
 ## Bilan d'activité
 
 Un bilan est un court texte qualitatif (2-4 phrases) généré **à la demande** depuis la page de l'activité — il n'est pas déclenché automatiquement par le sync, pour permettre d'ajouter du contexte avant de payer l'analyse.
 
 - Champ **contexte libre** (`activities.user_context`) : l'intention de la séance, des sensations, la météo… Il est enregistré avec l'activité et inclus dans le prompt. Sans contexte, le modèle a pour consigne de **ne pas supposer** l'intention de la sortie.
-- Entrée du prompt : profil cycliste + chiffres déjà calculés (TSS/IF, zones, D+ et ratio D+/km, VI, segments et deltas, tableau des laps s'il y en a plus d'un) — jamais l'historique brut.
+- Entrée du prompt : profil cycliste + chiffres déjà calculés (TSS/IF, zones, D+ et ratio D+/km, VI, segments et deltas, tableau des laps s'il y en a plus d'un) — jamais l'historique brut. Si la détection automatique est activée, s'y ajoutent les lectures stockées (efforts, découplage, comparaison aux sorties proches) et les splits automatiques ne sont plus présentés comme une séance. Une puissance estimée est signalée comme telle.
 - Le D+/km est fourni avec des repères plat / vallonné / montagneux, pour que la variabilité de puissance ne soit pas attribuée au terrain à tort.
 - Le prompt système est modifiable dans `/settings`. Un bilan déjà généré n'est pas régénéré tant que tu ne le demandes pas.
 - Fournisseur choisi dans `/settings` (**Anthropic** ou **OpenAI**). Un seul est appelé ; l'autre clé reste enregistrée.
@@ -195,5 +195,7 @@ Les records sont calculés une fois par sortie (au sync, à l'import, et en ratt
 - **Apparence** : couleur d'accent de l'interface (9 teintes douces prédéfinies, ou une couleur personnalisée) et mode **clair / sombre / automatique** (suit le système). Les couleurs de données (zones, puissance, FC…) restent fixes. Le mode sombre s'applique aussi aux graphiques, au calendrier et aux cartes.
 - **Clés API** : source de synchro (Strava ou Garmin Connect) et ses clés ; fournisseur du LLM (Anthropic ou OpenAI), clé, et modèle OpenAI.
 - **Profil physiologique** : FTP, FC max, FC repos, FC seuil, coefficient hrTSS, allure seuil. Enregistrer **recalcule tout l'historique**.
+- **Détection automatique** (désactivée par défaut) : côtes répétées au moins deux fois, devenues des segments locaux ; blocs d'effort ; laps automatiques distingués d'une séance ; comparaison aux sorties récentes. Le décompte, le recalcul et l'effacement sont sur la même page. Coupée, ces lectures ne sont plus injectées dans les bilans. Les favoris Strava ne sont pas touchés.
+- **Estimation de puissance** (désactivée par défaut) : watts estimés pour un vélo sans capteur, à partir de la vitesse et de la pente. Champs requis : poids du cycliste, poids du vélo, CdA, Crr. Les sorties qui ont déjà un capteur, et les courses à pied, ne sont pas modifiées. Le décompte, le recalcul et l'effacement sont sur la même page.
 - **Profil cycliste** : texte libre réinjecté dans chaque prompt.
 - **Prompts système** du bilan et du digest, éditables.

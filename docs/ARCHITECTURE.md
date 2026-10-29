@@ -47,6 +47,8 @@ src/
   llm/               trait LlmClient, clients Anthropic et OpenAI, prompt du bilan
   digest.rs          prompt et parsing du digest, distance estimée
   report.rs          « rapport IA » markdown (mode sans clé)
+  autodetect.rs      côtes répétées, efforts, laps, comparaison aux sorties proches
+  power_estimate.rs  watts estimés sans capteur (masse, CdA, Crr, pente)
 
   web/
     layout.rs        gabarit commun (barre de navigation, conteneur) et feuille de style de base

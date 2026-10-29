@@ -76,6 +76,9 @@ struct RefSegment {
     start_lng: f64,
     end_lat: f64,
     end_lng: f64,
+    /// Starred pins use 15 m. Auto-detected climb ends are estimated, so they
+    /// match a bit wider (`autodetect::AUTO_MATCH_M`).
+    threshold_m: f64,
 }
 
 /// Finds the [start_idx, end_idx] index range of `latlng` that covers this
@@ -83,12 +86,12 @@ struct RefSegment {
 /// first *subsequent* point within threshold of the segment end. Returns
 /// None if the activity never passed through the segment.
 fn match_segment(latlng: &[[f64; 2]], seg: &RefSegment) -> Option<(usize, usize)> {
-    let start_idx = latlng
-        .iter()
-        .position(|p| haversine_m(p[0], p[1], seg.start_lat, seg.start_lng) < MATCH_THRESHOLD_M)?;
+    let start_idx = latlng.iter().position(|p| {
+        haversine_m(p[0], p[1], seg.start_lat, seg.start_lng) < seg.threshold_m
+    })?;
     let end_idx = latlng[start_idx..]
         .iter()
-        .position(|p| haversine_m(p[0], p[1], seg.end_lat, seg.end_lng) < MATCH_THRESHOLD_M)
+        .position(|p| haversine_m(p[0], p[1], seg.end_lat, seg.end_lng) < seg.threshold_m)
         .map(|i| start_idx + i)?;
     if end_idx > start_idx {
         Some((start_idx, end_idx))
@@ -173,18 +176,28 @@ pub async fn run(pool: &SqlitePool) -> anyhow::Result<()> {
         .execute(pool)
         .await?;
 
-    let ref_segments: Vec<(i64, f64, f64, f64, f64)> =
-        sqlx::query_as("SELECT id, start_lat, start_lng, end_lat, end_lng FROM reference_segments")
-            .fetch_all(pool)
-            .await?;
+    // Auto segments stay in the table when the feature is off, but they are
+    // not matched again until it is turned back on.
+    let ref_segments: Vec<(i64, f64, f64, f64, f64, String)> = sqlx::query_as(
+        "SELECT id, start_lat, start_lng, end_lat, end_lng, source FROM reference_segments \
+         WHERE source != 'auto' \
+            OR COALESCE((SELECT autodetect_enabled FROM settings WHERE id = 1), 0) = 1",
+    )
+    .fetch_all(pool)
+    .await?;
     let ref_segments: Vec<RefSegment> = ref_segments
         .into_iter()
-        .map(|(id, start_lat, start_lng, end_lat, end_lng)| RefSegment {
+        .map(|(id, start_lat, start_lng, end_lat, end_lng, source)| RefSegment {
             id,
             start_lat,
             start_lng,
             end_lat,
             end_lng,
+            threshold_m: if source == "auto" {
+                crate::autodetect::AUTO_MATCH_M
+            } else {
+                MATCH_THRESHOLD_M
+            },
         })
         .collect();
 
@@ -310,6 +323,7 @@ mod tests {
             start_lng: 6.2000,
             end_lat: 49.1010,
             end_lng: 6.2010,
+            threshold_m: MATCH_THRESHOLD_M,
         };
         let m = match_segment(&latlng, &seg);
         assert_eq!(m, Some((1, 3)));
@@ -322,6 +336,7 @@ mod tests {
             id: 1,
             start_lat: 49.0,
             start_lng: 6.0,
+            threshold_m: MATCH_THRESHOLD_M,
             end_lat: 49.01,
             end_lng: 6.01,
         };

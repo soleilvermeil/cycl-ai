@@ -54,12 +54,29 @@ pub async fn import_activity(State(state): State<AppState>, mut multipart: Multi
 
     match insert_imported_activity(&state.pool, &title, &parsed).await {
         Ok(id) => {
+            let settings = crate::settings::fetch(&state.pool).await.ok();
+            let power_on = settings.as_ref().is_some_and(|s| s.power_estimate_enabled != 0);
+            let detect_on = settings.as_ref().is_some_and(|s| s.autodetect_enabled != 0);
+            if power_on {
+                if let Err(err) = crate::power_estimate::apply(&state.pool, &[id]).await {
+                    tracing::error!(?err, activity_id = id, "activity import: power estimate failed");
+                }
+            }
             if let Err(err) = crate::metrics::run(&state.pool).await {
                 tracing::error!(
                     ?err,
                     activity_id = id,
                     "activity import: metrics recompute failed"
                 );
+            }
+            if detect_on {
+                if let Err(err) = crate::autodetect::recompute(&state.pool).await {
+                    tracing::error!(?err, activity_id = id, "activity import: autodetect failed");
+                }
+            } else if power_on {
+                if let Err(err) = crate::segments::run(&state.pool).await {
+                    tracing::error!(?err, activity_id = id, "activity import: segment rematch failed");
+                }
             }
             Redirect::to(&format!("/activity/{id}"))
         }
@@ -87,8 +104,8 @@ async fn insert_imported_activity(
         r#"
         INSERT INTO activities
             (id, started_at, sport_type, duration_s, distance_m, elevation_gain_m,
-             avg_power_w, normalized_power_w, avg_hr, max_hr, title, source)
-        VALUES (?, ?, 'Ride', ?, ?, ?, ?, ?, ?, ?, ?, 'file')
+             avg_power_w, normalized_power_w, avg_hr, max_hr, title, source, workout_name)
+        VALUES (?, ?, 'Ride', ?, ?, ?, ?, ?, ?, ?, ?, 'file', ?)
         "#,
     )
     .bind(id)
@@ -101,6 +118,7 @@ async fn insert_imported_activity(
     .bind(parsed.avg_hr)
     .bind(parsed.max_hr)
     .bind(title)
+    .bind(&parsed.workout_name)
     .execute(pool)
     .await?;
 
@@ -124,8 +142,8 @@ async fn insert_imported_activity(
 
     for lap in &parsed.laps {
         sqlx::query(
-            "INSERT INTO laps (activity_id, lap_index, elapsed_time_s, distance_m, avg_power_w, avg_hr, max_hr) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO laps (activity_id, lap_index, elapsed_time_s, distance_m, avg_power_w, avg_hr, max_hr, lap_trigger, intensity) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(id)
         .bind(lap.lap_index)
@@ -134,6 +152,8 @@ async fn insert_imported_activity(
         .bind(lap.avg_power_w)
         .bind(lap.avg_hr)
         .bind(lap.max_hr)
+        .bind(&lap.lap_trigger)
+        .bind(&lap.intensity)
         .execute(pool)
         .await?;
     }

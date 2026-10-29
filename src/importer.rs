@@ -18,6 +18,10 @@ pub struct ParsedLap {
     pub avg_power_w: Option<f64>,
     pub avg_hr: Option<f64>,
     pub max_hr: Option<f64>,
+    /// FIT `lap_trigger`: `manual`, `distance`, `time`, …
+    pub lap_trigger: Option<String>,
+    /// FIT `intensity`: `active`, `rest`, `warmup`, `cooldown`, …
+    pub intensity: Option<String>,
 }
 
 pub struct ParsedActivity {
@@ -31,6 +35,8 @@ pub struct ParsedActivity {
     pub max_hr: Option<f64>,
     pub streams_json: Json,
     pub laps: Vec<ParsedLap>,
+    /// FIT workout name, when the file carried a workout message.
+    pub workout_name: Option<String>,
 }
 
 fn haversine_m(lat1: f64, lng1: f64, lat2: f64, lng2: f64) -> f64 {
@@ -129,6 +135,56 @@ mod fit {
             })
     }
 
+    fn field_u8(rec: &FitDataRecord, name: &str) -> Option<u8> {
+        rec.fields()
+            .iter()
+            .find(|f| f.name() == name)
+            .and_then(|f| match f.value() {
+                Value::Enum(x) | Value::UInt8(x) | Value::Byte(x) | Value::UInt8z(x) => Some(*x),
+                _ => None,
+            })
+    }
+
+    fn field_string(rec: &FitDataRecord, name: &str) -> Option<String> {
+        rec.fields()
+            .iter()
+            .find(|f| f.name() == name)
+            .and_then(|f| match f.value() {
+                Value::String(s) => {
+                    let trimmed = s.trim().trim_matches('\0').to_string();
+                    (!trimmed.is_empty()).then_some(trimmed)
+                }
+                _ => None,
+            })
+    }
+
+    fn lap_trigger_name(value: u8) -> Option<&'static str> {
+        Some(match value {
+            0 => "manual",
+            1 => "time",
+            2 => "distance",
+            3 => "position_start",
+            4 => "position_lap",
+            5 => "position_waypoint",
+            6 => "session_end",
+            7 => "fitness_equipment",
+            _ => return None,
+        })
+    }
+
+    fn intensity_name(value: u8) -> Option<&'static str> {
+        Some(match value {
+            0 => "active",
+            1 => "rest",
+            2 => "warmup",
+            3 => "cooldown",
+            4 => "recovery",
+            5 => "interval",
+            6 => "other",
+            _ => return None,
+        })
+    }
+
     /// FIT stores lat/lng as semicircles (int32 range), not degrees.
     fn semicircle_to_deg(raw: f64) -> f64 {
         raw * (180.0 / 2f64.powi(31))
@@ -149,6 +205,7 @@ mod fit {
 
         let mut first_ts: Option<i64> = None;
         let mut laps = Vec::new();
+        let mut workout_name: Option<String> = None;
 
         let mut session_start_epoch: Option<i64> = None;
         let mut session_duration_s: Option<i64> = None;
@@ -209,6 +266,13 @@ mod fit {
                         avg_power_w: field_f64(rec, "avg_power"),
                         avg_hr: field_f64(rec, "avg_heart_rate"),
                         max_hr: field_f64(rec, "max_heart_rate"),
+                        lap_trigger: field_u8(rec, "lap_trigger").and_then(lap_trigger_name).map(str::to_string),
+                        intensity: field_u8(rec, "intensity").and_then(intensity_name).map(str::to_string),
+                    });
+                }
+                MesgNum::Workout => {
+                    workout_name = workout_name.or_else(|| {
+                        field_string(rec, "wkt_name").or_else(|| field_string(rec, "name"))
                     });
                 }
                 MesgNum::Session => {
@@ -274,6 +338,7 @@ mod fit {
                 if have_cadence { cadence } else { Vec::new() },
             ),
             laps,
+            workout_name,
         })
     }
 }
@@ -362,6 +427,7 @@ mod gpx_fmt {
                 Vec::new(),
             ),
             laps: Vec::new(),
+            workout_name: None,
         })
     }
 }

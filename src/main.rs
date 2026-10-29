@@ -1,4 +1,5 @@
 mod apikeys;
+mod autodetect;
 mod bests;
 mod config;
 mod db;
@@ -9,6 +10,7 @@ mod llm;
 mod metrics;
 mod performance;
 mod planned;
+mod power_estimate;
 mod report;
 mod route_profile;
 mod route_thumb;

@@ -245,8 +245,8 @@ async fn run_inner(pool: &SqlitePool, full: bool) -> anyhow::Result<()> {
                 .filter(|_| is_ride && lap.device_watts.unwrap_or(false));
             sqlx::query(
                 r#"
-                INSERT INTO laps (activity_id, lap_index, elapsed_time_s, distance_m, avg_power_w, avg_hr, max_hr)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO laps (activity_id, lap_index, elapsed_time_s, distance_m, avg_power_w, avg_hr, max_hr, lap_trigger, intensity)
+                VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL)
                 "#,
             )
             .bind(activity.id)
@@ -277,22 +277,7 @@ async fn run_inner(pool: &SqlitePool, full: bool) -> anyhow::Result<()> {
     .execute(pool)
     .await?;
 
-    set_step("Calcul des métriques (TSS, CTL/ATL, zones)", total, total);
-    // Only the activities imported just now need their streams re-parsed;
-    // FTP/HR setting changes trigger the full recompute themselves.
-    crate::metrics::run_incremental(pool, &imported_ids).await?;
-    // The segment replay re-parses every stored ride, so it only runs when
-    // something new was imported (`import-segments` runs it itself too).
-    if imported_ids.is_empty() {
-        set_step(
-            "Détection des segments (rien de nouveau, ignorée)",
-            total,
-            total,
-        );
-    } else {
-        set_step("Détection des segments", total, total);
-        crate::segments::run(pool).await?;
-    }
+    finalize_import(pool, &imported_ids).await?;
 
     Ok(())
 }
@@ -387,8 +372,8 @@ async fn run_garmin(pool: &SqlitePool, api_key: &str, full: bool) -> anyhow::Res
             r#"
             INSERT INTO activities
                 (id, started_at, sport_type, duration_s, distance_m, elevation_gain_m,
-                 avg_power_w, normalized_power_w, avg_hr, max_hr, title, source, external_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'garmin', ?)
+                 avg_power_w, normalized_power_w, avg_hr, max_hr, title, source, external_id, workout_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'garmin', ?, ?)
             ON CONFLICT (id) DO UPDATE SET
                 started_at = excluded.started_at,
                 sport_type = excluded.sport_type,
@@ -401,7 +386,8 @@ async fn run_garmin(pool: &SqlitePool, api_key: &str, full: bool) -> anyhow::Res
                 max_hr = excluded.max_hr,
                 title = excluded.title,
                 source = 'garmin',
-                external_id = excluded.external_id
+                external_id = excluded.external_id,
+                workout_name = excluded.workout_name
             "#,
         )
         .bind(id)
@@ -416,6 +402,7 @@ async fn run_garmin(pool: &SqlitePool, api_key: &str, full: bool) -> anyhow::Res
         .bind(parsed.max_hr)
         .bind(&activity.name)
         .bind(activity.id)
+        .bind(&parsed.workout_name)
         .execute(pool)
         .await?;
 
@@ -450,8 +437,8 @@ async fn run_garmin(pool: &SqlitePool, api_key: &str, full: bool) -> anyhow::Res
         for lap in &parsed.laps {
             sqlx::query(
                 r#"
-                INSERT INTO laps (activity_id, lap_index, elapsed_time_s, distance_m, avg_power_w, avg_hr, max_hr)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO laps (activity_id, lap_index, elapsed_time_s, distance_m, avg_power_w, avg_hr, max_hr, lap_trigger, intensity)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 "#,
             )
             .bind(id)
@@ -461,6 +448,8 @@ async fn run_garmin(pool: &SqlitePool, api_key: &str, full: bool) -> anyhow::Res
             .bind(lap.avg_power_w)
             .bind(lap.avg_hr)
             .bind(lap.max_hr)
+            .bind(&lap.lap_trigger)
+            .bind(&lap.intensity)
             .execute(pool)
             .await?;
         }
@@ -478,14 +467,42 @@ async fn run_garmin(pool: &SqlitePool, api_key: &str, full: bool) -> anyhow::Res
     .execute(pool)
     .await?;
 
+    finalize_import(pool, &imported_ids).await?;
+    Ok(())
+}
+
+/// Power estimate (when enabled) before TSS, then segments. Autodetect, when
+/// enabled and something new arrived, rebuilds its own segments and matches
+/// them in the same pass.
+async fn finalize_import(pool: &SqlitePool, imported_ids: &[i64]) -> anyhow::Result<()> {
+    let settings = crate::settings::fetch(pool).await?;
+    let total = imported_ids.len();
+    if settings.power_estimate_enabled != 0 {
+        set_step("Estimation de la puissance manquante", total, total);
+        if let Err(err) = crate::power_estimate::apply(pool, imported_ids).await {
+            tracing::error!(?err, "power estimate failed");
+        }
+    }
     set_step("Calcul des métriques (TSS, CTL/ATL, zones)", total, total);
-    crate::metrics::run_incremental(pool, &imported_ids).await?;
+    // Only the activities imported just now need their streams re-parsed;
+    // FTP/HR setting changes trigger the full recompute themselves.
+    crate::metrics::run_incremental(pool, imported_ids).await?;
+    // The segment replay re-parses every stored ride, so it only runs when
+    // something new was imported (`import-segments` runs it itself too).
     if imported_ids.is_empty() {
         set_step(
             "Détection des segments (rien de nouveau, ignorée)",
             total,
             total,
         );
+        return Ok(());
+    }
+    if settings.autodetect_enabled != 0 {
+        set_step("Détection automatique (côtes, efforts)", total, total);
+        if let Err(err) = crate::autodetect::recompute(pool).await {
+            tracing::error!(?err, "autodetect failed, matching starred segments only");
+            crate::segments::run(pool).await?;
+        }
     } else {
         set_step("Détection des segments", total, total);
         crate::segments::run(pool).await?;

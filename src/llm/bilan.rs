@@ -37,6 +37,9 @@ struct ActivityDeltas {
     title: Option<String>,
     description: Option<String>,
     user_context: Option<String>,
+    power_estimated: bool,
+    autodetect: bool,
+    insight: Option<String>,
 }
 
 struct SegmentEffortRow {
@@ -50,8 +53,11 @@ struct SegmentEffortRow {
 struct LapRow {
     lap_index: i64,
     elapsed_time_s: i64,
+    distance_m: f64,
     avg_power_w: Option<f64>,
     avg_hr: Option<f64>,
+    lap_trigger: Option<String>,
+    intensity: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -75,6 +81,7 @@ struct ActivityRow {
     user_context: Option<String>,
     title: Option<String>,
     description: Option<String>,
+    power_source: Option<String>,
 }
 
 async fn fetch_activity_deltas(
@@ -90,7 +97,7 @@ async fn fetch_activity_deltas(
         SELECT sport_type, distance_m, duration_s, elevation_gain_m, avg_power_w, normalized_power_w,
                avg_hr, tss, intensity_factor,
                zone1_s, zone2_s, zone3_s, zone4_s, zone5_s, zone6_s, zone7_s,
-               user_context, title, description
+               user_context, title, description, power_source
         FROM activities WHERE id = ?
         "#,
     )
@@ -104,18 +111,36 @@ async fn fetch_activity_deltas(
         FROM segment_efforts se
         JOIN reference_segments rs ON rs.id = se.reference_segment_id
         WHERE se.activity_id = ?
+          AND (rs.source != 'auto'
+               OR COALESCE((SELECT autodetect_enabled FROM settings WHERE id = 1), 0) = 1)
         "#,
     )
     .bind(activity_id)
     .fetch_all(pool)
     .await?;
 
-    let laps: Vec<(i64, i64, Option<f64>, Option<f64>)> = sqlx::query_as(
-        "SELECT lap_index, elapsed_time_s, avg_power_w, avg_hr FROM laps WHERE activity_id = ? ORDER BY lap_index",
+    let laps: Vec<(i64, i64, f64, Option<f64>, Option<f64>, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT lap_index, elapsed_time_s, distance_m, avg_power_w, avg_hr, lap_trigger, intensity \
+         FROM laps WHERE activity_id = ? ORDER BY lap_index",
     )
     .bind(activity_id)
     .fetch_all(pool)
     .await?;
+
+    let autodetect: i64 = sqlx::query_scalar(
+        "SELECT autodetect_enabled FROM settings WHERE id = 1",
+    )
+    .fetch_optional(pool)
+    .await?
+    .unwrap_or(0);
+    let insight: Option<String> = if autodetect != 0 {
+        sqlx::query_scalar("SELECT summary FROM activity_insights WHERE activity_id = ?")
+            .bind(activity_id)
+            .fetch_optional(pool)
+            .await?
+    } else {
+        None
+    };
 
     Ok(ActivityDeltas {
         activity_id,
@@ -160,16 +185,32 @@ async fn fetch_activity_deltas(
             .collect(),
         laps: laps
             .into_iter()
-            .map(|(lap_index, elapsed_time_s, avg_power_w, avg_hr)| LapRow {
-                lap_index,
-                elapsed_time_s,
-                avg_power_w,
-                avg_hr,
-            })
+            .map(
+                |(
+                    lap_index,
+                    elapsed_time_s,
+                    distance_m,
+                    avg_power_w,
+                    avg_hr,
+                    lap_trigger,
+                    intensity,
+                )| LapRow {
+                    lap_index,
+                    elapsed_time_s,
+                    distance_m,
+                    avg_power_w,
+                    avg_hr,
+                    lap_trigger,
+                    intensity,
+                },
+            )
             .collect(),
         user_context: row.user_context,
         title: row.title,
         description: row.description,
+        power_estimated: row.power_source.as_deref() == Some("estimate"),
+        autodetect: autodetect != 0,
+        insight,
     })
 }
 
@@ -221,6 +262,9 @@ fn format_deltas(d: &ActivityDeltas) -> String {
             .join(" / ");
         out += "\n";
     }
+    if d.power_estimated {
+        out += "La puissance ci-dessus est estimée (poids, CdA, Crr, pente), pas mesurée par un capteur.\n";
+    }
     if !d.segment_efforts.is_empty() {
         out += "Segments de référence:\n";
         for seg in &d.segment_efforts {
@@ -243,8 +287,32 @@ fn format_deltas(d: &ActivityDeltas) -> String {
     }
     // A Strava activity always has at least 1 lap (the whole ride) even
     // with no manual laps pressed — only worth showing when there's an
-    // actual structured breakdown to analyze.
-    if d.laps.len() > 1 {
+    // actual structured breakdown to analyze. Auto-distance splits (typical
+    // of a Garmin watch) are not that breakdown.
+    let lap_kind = if d.autodetect {
+        crate::autodetect::classify_laps(
+            &d.laps
+                .iter()
+                .map(|lap| crate::autodetect::LapSample {
+                    distance_m: lap.distance_m,
+                    trigger: lap.lap_trigger.clone(),
+                    intensity: lap.intensity.clone(),
+                })
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        crate::autodetect::LapRead::Ordinary
+    };
+    if lap_kind == crate::autodetect::LapRead::AutoSplit {
+        if let Some(note) = crate::autodetect::lap_note(lap_kind) {
+            out += note;
+            out += "\n";
+        }
+    } else if d.laps.len() > 1 {
+        if let Some(note) = crate::autodetect::lap_note(lap_kind) {
+            out += note;
+            out += "\n";
+        }
         out += "Laps (structure manuelle pendant la sortie):\n";
         for lap in &d.laps {
             out += &format!(
@@ -260,6 +328,9 @@ fn format_deltas(d: &ActivityDeltas) -> String {
             }
             out += "\n";
         }
+    }
+    if let Some(insight) = d.insight.as_deref().filter(|s| !s.trim().is_empty()) {
+        out += &format!("\nLectures automatiques:\n{insight}\n");
     }
     out
 }

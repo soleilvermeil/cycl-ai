@@ -112,6 +112,18 @@ pub async fn serve(pool: SqlitePool, bind: &str) -> anyhow::Result<()> {
         )
         .route("/settings/athlete", post(settings::update_athlete_config))
         .route("/settings/appearance", post(settings::update_appearance))
+        .route("/settings/autodetect", post(settings::update_autodetect))
+        .route(
+            "/settings/autodetect/recompute",
+            post(settings::recompute_autodetect),
+        )
+        .route("/settings/autodetect/clear", post(settings::clear_autodetect))
+        .route("/settings/power", post(settings::update_power_estimate))
+        .route(
+            "/settings/power/recompute",
+            post(settings::recompute_power_estimate),
+        )
+        .route("/settings/power/clear", post(settings::clear_power_estimate))
         // Planned-route GPX and FIT/GPX activity uploads can exceed axum's 2 MB default.
         .layer(axum::extract::DefaultBodyLimit::max(25 * 1024 * 1024))
         .with_state(state);
