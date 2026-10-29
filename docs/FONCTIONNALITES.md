@@ -17,18 +17,40 @@ Comportement détaillé de CyclAI. Pour la vue d'ensemble et l'installation, voi
 
 ## Sources d'activités
 
+Une seule source est active, choisie dans `/settings` (**Source de synchronisation**). `cyclai sync` et le bouton du dashboard interrogent celle-là. Les sorties déjà en base restent. La date de dernière synchro est partagée : après un changement de source, **Tout l'historique** une fois, sinon seules les sorties postérieures à cette date sont demandées.
+
 | Source | Comment | Notes |
 |---|---|---|
-| **Strava** | Bouton « Synchroniser Strava » ou `cyclai sync` | Ne garde que `sport_type` = `Ride`, `Run`, `TrailRun` (le champ historique `type` confond route et gravel, il n'est pas utilisé) |
-| **Import FIT / GPX** | Bouton « Importer GPX/FIT » du dashboard | FIT : puissance, FC, cadence, laps. GPX : position, altitude, temps seulement. Les activités importées ont un **id négatif** (pas de lien Strava) |
+| **Strava** | Bouton « Synchroniser Strava » ou `cyclai sync` | Ne garde que `sport_type` = `Ride`, `VirtualRide`, `Run`, `TrailRun` (le champ historique `type` confond route et gravel, il n'est pas utilisé). Id Strava = clé primaire (positif), lien vers strava.com |
+| **Garmin Connect** | Bouton « Synchroniser Garmin » ou `cyclai sync` | Clé personnelle (Paramètres Connect → Personal API). Même filtre de sports, via le type Garmin (voir ci-dessous). Id interne **négatif** ; le lien Connect utilise l'id Garmin (`external_id`) |
+| **Import FIT / GPX** | Bouton « Importer GPX/FIT » du dashboard | FIT : puissance, FC, cadence, laps. GPX : position, altitude, temps seulement. Id **négatif**, `source = file`, pas de lien externe |
 
 Pour chaque activité Strava nouvelle, le sync récupère le résumé, la description, les streams (`latlng, distance, watts, heartrate, altitude, cadence, time`) et les laps (≈ 3 appels). Une activité déjà stockée est ignorée. Après l'import, les métriques et les segments sont recalculés sur **tout** l'historique.
 
-`sync --full` ignore la date du dernier sync et parcourt tout l'historique Strava. Limite de débit Strava (100 requêtes / 15 min) : relancer reprend avec ce qui manque.
+`sync --full` ignore la date du dernier sync et parcourt tout l'historique de la source active. Limite de débit Strava (100 requêtes / 15 min) : relancer reprend avec ce qui manque. Garmin répond parfois 429 : CyclAI réessaie (en-tête `Retry-After`, sinon un délai qui double).
+
+### Garmin Connect
+
+La clé personnelle sert à obtenir un jeton de 24 h à chaque synchro (pas de refresh token). Elle expire selon la durée choisie à la création (30, 90, 180 ou 365 jours). Usage personnel, un seul compte.
+
+CyclAI ne lit pas les flux JSON de Connect : il télécharge l'archive ZIP de l'activité, en extrait le FIT, et le passe au même parseur que l'import fichier. Une archive absente ou illisible est ignorée et retentée à la synchro suivante.
+
+Correspondance des types Garmin conservés :
+
+| Type Garmin | `sport_type` CyclAI |
+|---|---|
+| `cycling`, `road_biking` | `Ride` |
+| `indoor_cycling`, `virtual_ride` | `VirtualRide` |
+| `running`, `treadmill_running`, `track_running` | `Run` |
+| `trail_running`, `ultra_run` | `TrailRun` |
+
+Gravel, VTT, vélo électrique et cardio indoor sont ignorés. Sur une course, la puissance de la montre est retirée des flux et des laps : le hrTSS reste basé sur la FC. Un vélo sans capteur de puissance n'a pas de TSS, comme avec Strava.
+
+Les id Garmin sont de grands entiers positifs. Ils ne peuvent pas servir de clé primaire (collision avec Strava, et un id positif est un lien strava.com). L'id interne est donc négatif, partagé avec les imports fichier ; `activities.external_id` garde l'id Connect. Index unique `(source, external_id)`.
 
 ### Vélo et course à pied
 
-- **Vélo de route (`Ride`)** : pipeline complet — puissance, TSS/IF, zones, segments, bilan.
+- **Vélo (`Ride`, et `VirtualRide` pour le home trainer)** : pipeline complet — puissance, TSS/IF, zones, segments, bilan. Sans capteur de puissance, pas de TSS.
 - **Course (`Run`, `TrailRun`)** : allure en **min/km** (liste, détail, laps, courbe d'allure) et FC. Pas de puissance, de zones de puissance ni de segments. Le bilan ne parle que d'allure, de FC et de dénivelé.
 
 ## Métriques d'entraînement
@@ -51,7 +73,7 @@ Les acronymes (TSS, IF, NP, VI, CTL, ATL, TSB, FTP, hrTSS) sont soulignés en po
 
 Matching **100 % local**, indépendant des `segment_efforts` de Strava (décision volontaire).
 
-1. Étoile tes segments sur Strava, puis `cyclai import-segments` : seules les **coordonnées** de départ / arrivée sont récupérées dans `reference_segments`.
+1. Étoile tes segments sur Strava, puis `cyclai import-segments` : seules les **coordonnées** de départ / arrivée sont récupérées dans `reference_segments`. Garmin Connect n'a pas d'équivalent : sans Strava, le matching continue sur les segments déjà en base, et on ne peut pas en ajouter de nouveaux par cette commande.
 2. À chaque sync, pour chaque activité, le flux GPS est comparé aux deux extrémités par distance haversine (seuil de **15 m**) ; la portion entre l'entrée et la sortie fournit puissance, vitesse et FC moyennes.
 3. L'historique est traité **chronologiquement** et reconstruit à chaque sync : les deltas (vs record perso, vs moyenne des derniers passages, vs dernier passage) ne comparent un effort qu'à ce qui s'est passé *avant*.
 
@@ -65,7 +87,9 @@ Un bilan est un court texte qualitatif (2-4 phrases) généré **à la demande**
 - Entrée du prompt : profil cycliste + chiffres déjà calculés (TSS/IF, zones, D+ et ratio D+/km, VI, segments et deltas, tableau des laps s'il y en a plus d'un) — jamais l'historique brut.
 - Le D+/km est fourni avec des repères plat / vallonné / montagneux, pour que la variabilité de puissance ne soit pas attribuée au terrain à tort.
 - Le prompt système est modifiable dans `/settings`. Un bilan déjà généré n'est pas régénéré tant que tu ne le demandes pas.
-- Modèle : `claude-sonnet-5` (constante `MODEL` dans `src/llm/mod.rs`), réflexion étendue désactivée, `max_tokens` 4096.
+- Fournisseur choisi dans `/settings` (**Anthropic** ou **OpenAI**). Un seul est appelé ; l'autre clé reste enregistrée.
+- Anthropic : modèle fixe `claude-sonnet-5`, réflexion étendue désactivée, `max_tokens` 4096.
+- OpenAI : modèle au choix parmi `gpt-6-luna` (le moins cher), `gpt-6.1-terra`, `gpt-6.1-sol` (défaut, équilibré) et `gpt-6-astra` (le plus capable). API Responses, raisonnement `low`, `max_output_tokens` 4096. La requête n'est pas conservée côté OpenAI (`store: false`).
 
 ## Digest hebdomadaire
 
@@ -105,7 +129,7 @@ Bouton **« Générer mon digest »** en haut de la page **Séances** (`/workout
 
 ## Mode sans clé API : rapport IA
 
-Sans clé Anthropic dans `/settings`, aucun appel n'est fait et rien n'est dépensé : un bandeau l'indique (page Séances et page d'activité). Les boutons **« Télécharger le rapport IA »** (digest sur la page Séances, bilan sur la page d'activité) produisent un fichier markdown contenant la consigne, le profil, les données calculées et le format de réponse attendu — exactement ce que recevrait l'API. À coller dans Claude, ChatGPT ou autre pour obtenir la même analyse. Le même bandeau s'affiche si l'appel API échoue (clé invalide, quota, réseau).
+Sans clé pour le **fournisseur choisi** dans `/settings`, aucun appel n'est fait et rien n'est dépensé : un bandeau l'indique (page Séances et page d'activité). Les boutons **« Télécharger le rapport IA »** (digest sur la page Séances, bilan sur la page d'activité) produisent un fichier markdown contenant la consigne, le profil, les données calculées et le format de réponse attendu — exactement ce que recevrait l'API. À coller dans Claude, ChatGPT ou autre pour obtenir la même analyse. Le même bandeau s'affiche si l'appel API échoue (clé invalide, quota, réseau).
 
 ## Concepteur de séances
 
@@ -143,7 +167,7 @@ Ajout : clic sur un jour du calendrier (`/planned/new?date=…`), bouton « Plan
 - **Zones** de puissance (7) et de FC (5) : barres par zone (une barre pleine = max(zone la plus longue, 60 %) pour rester lisible), durées en `H:MM:SS`, plage en W / bpm au survol.
 - **Courbe de puissance** : meilleures moyennes sur 5 s, 15 s, 30 s, 1, 5, 10 et 20 min.
 - **Segments** détectés et leurs deltas.
-- **Bilan**, titre et description Strava, contexte libre.
+- **Bilan**, titre et description, contexte libre. Un id positif ouvre la sortie sur strava.com ; une sortie Garmin ouvre Connect (`external_id`). Un import fichier n'a pas de lien.
 
 Couleurs communes à tous les outils de l'utilisateur : FC rouge, vitesse bleu clair, cadence orange, puissance mauve, altitude gris.
 
@@ -169,7 +193,7 @@ Les records sont calculés une fois par sortie (au sync, à l'import, et en ratt
 `/settings` regroupe tout ce qui était auparavant dans `.env`, plus l'apparence :
 
 - **Apparence** : couleur d'accent de l'interface (9 teintes douces prédéfinies, ou une couleur personnalisée) et mode **clair / sombre / automatique** (suit le système). Les couleurs de données (zones, puissance, FC…) restent fixes. Le mode sombre s'applique aussi aux graphiques, au calendrier et aux cartes.
-- **Clés API** : Strava (client id / secret / refresh token) et Anthropic.
+- **Clés API** : source de synchro (Strava ou Garmin Connect) et ses clés ; fournisseur du LLM (Anthropic ou OpenAI), clé, et modèle OpenAI.
 - **Profil physiologique** : FTP, FC max, FC repos, FC seuil, coefficient hrTSS, allure seuil. Enregistrer **recalcule tout l'historique**.
 - **Profil cycliste** : texte libre réinjecté dans chaque prompt.
 - **Prompts système** du bilan et du digest, éditables.

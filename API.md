@@ -164,11 +164,11 @@ Dernières sorties, de la plus récente à la plus ancienne.
 }
 ```
 
-- `sport` vaut `ride` ou `run`. Pour une course : `avg_pace_min_per_km` (ex. `"5:08"`) est renseigné, `avg_speed_kmh` est `null` ; l'inverse pour le vélo.
+- `sport` vaut `ride` ou `run` (`VirtualRide`, le home trainer, compte comme `ride`). `sport_type` garde la valeur fine : `Ride`, `VirtualRide`, `Run`, `TrailRun`. Pour une course : `avg_pace_min_per_km` (ex. `"5:08"`) est renseigné, `avg_speed_kmh` est `null` ; l'inverse pour le vélo.
 - `tss_source` : `power` (vélo, basé sur la puissance normalisée et le FTP) ou `hr` (course à pied : **hrTSS**, basé sur la FC — charge TRIMP rapportée à une heure à la FC seuil = 100). Un TSS vaut `null` si la donnée manque (vélo sans capteur de puissance, course sans FC).
 - `tss_load` : ce que la sortie ajoute à la charge totale — égal à `tss` pour le vélo, `tss` × `hr_tss_coefficient` pour une course. Le `tss` d'une course reste son hrTSS brut.
 - Les champs de puissance et `intensity_factor` sont `null` quand la donnée n'existe pas (toujours le cas pour une course).
-- Les sorties importées depuis un fichier FIT/GPX ont un `id` négatif.
+- Les sorties importées depuis un fichier FIT/GPX **et** celles synchronisées depuis Garmin Connect ont un `id` négatif. Un `id` positif est un id Strava. L'API n'expose pas l'id Garmin d'origine (`activities.external_id`).
 
 ## GET /api/v1/activities/{id}
 
@@ -210,7 +210,7 @@ Une sortie, avec les mêmes champs que ci-dessus plus le détail calculé à par
 - `avg_power_w` / `max_power_w` / `normalized_power_w` (NP sur 30 s glissantes, `null` si le lap dure moins de 30 s) et `intensity_factor` (NP / FTP) ;
 - `avg_hr` / `max_hr`, cadence (`avg_cadence_rpm` pour le vélo, `avg_cadence_spm` en pas/min pour la course), D+, pente moyenne, vitesse ou allure ;
 - `power_zone_seconds` (7 zones, vélo) et `hr_zone_seconds` (5 zones Karvonen) : temps passé dans chaque zone.
-- Sans flux disponibles, un lap retombe sur les valeurs résumées de Strava (distance, puissance et FC moyennes) et les autres champs valent `null`.
+- Sans flux disponibles, un lap retombe sur le résumé stocké de la sortie (distance, puissance et FC moyennes, qu'ils viennent de Strava ou du FIT) et les autres champs valent `null`.
 
 **Performance** (`null` sans flux) — métriques sur toute la sortie :
 - `power_curve_w` : meilleure puissance moyenne sur 5 s à 60 min (`null` si la sortie est plus courte) ;
@@ -272,7 +272,7 @@ Synthèse de l'entraînement récent.
 }
 ```
 
-- `by_sport` est indexé par `sport_type` Strava (`Ride`, `Run`, `TrailRun`). Les `tss` (totaux, par sport, par semaine) additionnent le TSS puissance (vélo) et le hrTSS (course) **pondéré par le coefficient hrTSS**, comme la charge.
+- `by_sport` est indexé par `sport_type` (`Ride`, `VirtualRide`, `Run`, `TrailRun`), que la sortie vienne de Strava, de Garmin ou d'un fichier. Les `tss` (totaux, par sport, par semaine) additionnent le TSS puissance (vélo) et le hrTSS (course) **pondéré par le coefficient hrTSS**, comme la charge.
 - `by_week` : semaines débutant le lundi.
 
 ## GET /api/v1/workouts
