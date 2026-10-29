@@ -14,6 +14,9 @@ pub struct Settings {
     pub digest_system_prompt: String,
     pub theme_color: String,
     pub theme_mode: String,
+    pub garmin_api_key: String,
+    /// `strava` or `garmin`. The sync reads only this source.
+    pub sync_source: String,
 }
 
 impl Settings {
@@ -27,7 +30,8 @@ impl Settings {
 pub async fn fetch(pool: &SqlitePool) -> anyhow::Result<Settings> {
     Ok(sqlx::query_as(
         "SELECT strava_client_id, strava_client_secret, anthropic_api_key, athlete_profile, \
-         bilan_system_prompt, digest_system_prompt, theme_color, theme_mode FROM settings WHERE id = 1",
+         bilan_system_prompt, digest_system_prompt, theme_color, theme_mode, garmin_api_key, \
+         sync_source FROM settings WHERE id = 1",
     )
     .fetch_one(pool)
     .await?)

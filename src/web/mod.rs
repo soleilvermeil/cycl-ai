@@ -1000,20 +1000,34 @@ fn render_page(
     calendar_activities: &[CalendarActivity],
     calendar_planned: &[CalendarPlanned],
     load_chart_json: &str,
+    sync_source: &str,
 ) -> String {
     let zone_bar_html = render_zone_bar(&load.zone_secs, config.ftp_watts as f64);
     let tsb_gauge_html = render_tsb_gauge(load.tsb, load.rest_days_to_next_band);
     let activity_items = activities.iter().map(render_activity_card).collect::<String>();
     let calendar_html = render_calendar_html(calendar_activities, calendar_planned);
 
-    let actions = r#"<form method="post" action="/sync">
-  <button type="submit">Synchroniser Strava</button>
-  <button type="submit" formaction="/sync/full" class="secondary" title="Importe aussi les activités plus anciennes pas encore en base (ex: courses à pied)">Tout l'historique</button>
+    let (sync_label, full_title) = if sync_source == "garmin" {
+        (
+            "Synchroniser Garmin",
+            "Importe les sorties Garmin plus anciennes pas encore en base",
+        )
+    } else {
+        (
+            "Synchroniser Strava",
+            "Importe aussi les activités plus anciennes pas encore en base (ex: courses à pied)",
+        )
+    };
+    let actions = format!(
+        r#"<form method="post" action="/sync">
+  <button type="submit">{sync_label}</button>
+  <button type="submit" formaction="/sync/full" class="secondary" title="{full_title}">Tout l'historique</button>
 </form>
 <form method="post" action="/import" enctype="multipart/form-data">
   <input type="file" name="file" accept=".gpx,.fit" required>
   <button type="submit" class="secondary">Importer GPX/FIT</button>
-</form>"#;
+</form>"#
+    );
 
     let body = format!(
         r#"{header}
@@ -1058,7 +1072,7 @@ document.querySelectorAll('.activity-body .bilan:not(.pending)').forEach(functio
 </div>"#,
         load_chart_html = render_load_chart(load_chart_json),
         sync_status_js = SYNC_STATUS_JS,
-        header = layout::page_header("Tableau de bord", "", actions),
+        header = layout::page_header("Tableau de bord", "", &actions),
         tss_period = load.tss_period,
         tss_label = annotate_acronyms("TSS"),
         ctl = load.ctl,
@@ -1164,6 +1178,10 @@ async fn dashboard(State(state): State<AppState>) -> Html<String> {
     let activities = fetch_recent_activities(&state.pool).await.expect("activities query");
     let calendar_activities = fetch_calendar_activities(&state.pool).await.expect("calendar query");
     let calendar_planned = fetch_calendar_planned(&state.pool, &config.athlete()).await.expect("planned query");
+    let sync_source = crate::settings::fetch(&state.pool)
+        .await
+        .map(|settings| settings.sync_source)
+        .unwrap_or_else(|_| "strava".into());
     Html(render_page(
         &config,
         &load,
@@ -1171,6 +1189,7 @@ async fn dashboard(State(state): State<AppState>) -> Html<String> {
         &calendar_activities,
         &calendar_planned,
         &load_chart_json(&state.pool).await,
+        &sync_source,
     ))
 }
 

@@ -18,6 +18,8 @@ pub struct Config {
     pub hr_max: u32,
     pub hr_rest: u32,
     pub athlete_profile: String,
+    /// Personal API key. Empty until the user creates one on Garmin Connect.
+    pub garmin_api_key: String,
 }
 
 impl Config {
@@ -36,6 +38,7 @@ impl Config {
             hr_max: env::var("HR_MAX").unwrap_or_else(|_| "190".into()).parse()?,
             hr_rest: env::var("HR_REST").unwrap_or_else(|_| "50".into()).parse()?,
             athlete_profile: env::var("ATHLETE_PROFILE").unwrap_or_default(),
+            garmin_api_key: env::var("GARMIN_API_KEY").unwrap_or_default(),
         })
     }
 }

@@ -3,6 +3,7 @@ mod bests;
 mod config;
 mod db;
 mod digest;
+mod garmin;
 mod importer;
 mod llm;
 mod metrics;
@@ -31,8 +32,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Fetch new Strava activities/streams, run deterministic calcs, generate per-activity bilans.
-    /// Triggered daily by a systemd timer.
+    /// Fetch new activities from the source chosen in /settings (Strava or
+    /// Garmin), run deterministic calcs. Triggered daily by a systemd timer.
     Sync {
         /// Walk the whole Strava history (not just activities since the last
         /// sync) and import whatever isn't stored yet — e.g. past runs.

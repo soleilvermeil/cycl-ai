@@ -88,6 +88,17 @@ document.querySelectorAll('.swatch').forEach(function(b) {{
 <section>
 <h2>Clés API</h2>
 <form method="post" action="/settings/keys">
+  <label>Source de synchronisation
+  <select name="sync_source">
+    <option value="strava"{strava_selected}>Strava</option>
+    <option value="garmin"{garmin_selected}>Garmin Connect</option>
+  </select>
+  </label>
+  <p class="hint">Une seule source est interrogée. Les sorties déjà en base restent. Après un changement de source, « Tout l'historique » rattrape les anciennes sorties de la nouvelle : la synchro simple ne reprend que ce qui est postérieur à la dernière synchro.</p>
+  <label>Clé API Garmin Connect
+  <input type="password" autocomplete="off" name="garmin_api_key" value="{garmin_api_key}">
+  </label>
+  <p class="hint">Clé personnelle créée sur Garmin Connect (Paramètres → Personal API). Elle sert à obtenir un jeton de 24 h à chaque synchro. Usage personnel, un seul compte. Vélo (route et home trainer) et course à pied ; le gravel, le VTT et le cardio indoor sont ignorés.</p>
   <label>Strava Client ID
   <input type="text" name="strava_client_id" value="{strava_client_id}">
   </label>
@@ -182,6 +193,9 @@ document.querySelectorAll('.swatch').forEach(function(b) {{
         lthr = lthr,
         hr_tss_coef = hr_tss_coef,
         run_pace = run_pace,
+        strava_selected = if settings.sync_source == "garmin" { "" } else { " selected" },
+        garmin_selected = if settings.sync_source == "garmin" { " selected" } else { "" },
+        garmin_api_key = escape_html(&settings.garmin_api_key),
         strava_client_id = escape_html(&settings.strava_client_id),
         strava_client_secret = escape_html(&settings.strava_client_secret),
         strava_refresh_token = escape_html(strava_refresh_token.as_deref().unwrap_or("")),
@@ -208,15 +222,23 @@ pub struct KeysForm {
     strava_refresh_token: String,
     #[serde(default)]
     anthropic_api_key: String,
+    #[serde(default)]
+    garmin_api_key: String,
+    #[serde(default)]
+    sync_source: String,
 }
 
 pub async fn update_keys(State(state): State<AppState>, axum::extract::Form(form): axum::extract::Form<KeysForm>) -> Redirect {
+    let sync_source = if form.sync_source == "garmin" { "garmin" } else { "strava" };
     let _ = sqlx::query(
-        "UPDATE settings SET strava_client_id = ?, strava_client_secret = ?, anthropic_api_key = ? WHERE id = 1",
+        "UPDATE settings SET strava_client_id = ?, strava_client_secret = ?, anthropic_api_key = ?, \
+         garmin_api_key = ?, sync_source = ? WHERE id = 1",
     )
     .bind(form.strava_client_id.trim())
     .bind(form.strava_client_secret.trim())
     .bind(form.anthropic_api_key.trim())
+    .bind(form.garmin_api_key.trim())
+    .bind(sync_source)
     .execute(&state.pool)
     .await;
 

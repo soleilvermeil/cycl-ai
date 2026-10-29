@@ -1,3 +1,4 @@
+use crate::garmin::GarminClient;
 use crate::strava::StravaClient;
 use chrono::Utc;
 use serde::Serialize;
@@ -94,6 +95,9 @@ pub async fn run_full(pool: &SqlitePool) -> anyhow::Result<()> {
 async fn run_inner(pool: &SqlitePool, full: bool) -> anyhow::Result<()> {
     set_step("Chargement de la configuration", 0, 0);
     let settings = crate::settings::fetch(pool).await?;
+    if settings.sync_source == "garmin" {
+        return run_garmin(pool, &settings.garmin_api_key, full).await;
+    }
 
     let state: Option<SyncState> = sqlx::query_as(
         "SELECT last_sync_epoch, strava_refresh_token FROM sync_state WHERE id = 1",
@@ -263,5 +267,188 @@ async fn run_inner(pool: &SqlitePool, full: bool) -> anyhow::Result<()> {
         crate::segments::run(pool).await?;
     }
 
+    Ok(())
+}
+
+/// Garmin equivalent of the Strava branch in `run_inner`: list supported activities, download each
+/// original FIT, and store it through the same parser as a manual FIT import.
+/// Power from a run (foot pod / watch) is dropped — hrTSS is heart-rate only.
+async fn run_garmin(pool: &SqlitePool, api_key: &str, full: bool) -> anyhow::Result<()> {
+    if api_key.trim().is_empty() {
+        anyhow::bail!("clé API Garmin absente — renseigne-la dans /settings");
+    }
+
+    let last_sync_epoch: i64 = if full {
+        0
+    } else {
+        sqlx::query_scalar("SELECT last_sync_epoch FROM sync_state WHERE id = 1")
+            .fetch_optional(pool)
+            .await?
+            .unwrap_or(0)
+    };
+
+    set_step("Authentification Garmin", 0, 0);
+    let client = GarminClient::authenticate(api_key).await?;
+
+    set_step("Récupération de la liste des activités Garmin", 0, 0);
+    let after = (last_sync_epoch > 0).then_some(last_sync_epoch);
+    let activities = client.list_supported(after).await?;
+    tracing::info!(count = activities.len(), "supported activities fetched from Garmin");
+
+    let total = activities.len();
+    let mut imported_ids = Vec::new();
+    for (i, activity) in activities.iter().enumerate() {
+        let label = format!("Activité {}/{} « {} »", i + 1, total, activity.name);
+        let existing_id: Option<i64> = sqlx::query_scalar(
+            "SELECT id FROM activities WHERE source = 'garmin' AND external_id = ?",
+        )
+        .bind(activity.id)
+        .fetch_optional(pool)
+        .await?;
+        if let Some(id) = existing_id {
+            let stored: Option<i64> = sqlx::query_scalar(
+                "SELECT activity_id FROM activity_streams WHERE activity_id = ?",
+            )
+            .bind(id)
+            .fetch_optional(pool)
+            .await?;
+            if stored.is_some() {
+                continue;
+            }
+        }
+
+        set_step(format!("{label} : téléchargement du FIT"), i, total);
+        let Some(fit) = client.download_fit(activity.id).await? else {
+            tracing::warn!(garmin_id = activity.id, "no FIT file, activity skipped");
+            continue;
+        };
+        let mut parsed = match crate::importer::parse_fit(&fit) {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                tracing::warn!(garmin_id = activity.id, ?err, "FIT parse failed, activity skipped");
+                continue;
+            }
+        };
+
+        let is_ride = crate::metrics::is_ride(&activity.sport_type);
+        if !is_ride {
+            parsed.avg_power_w = None;
+            parsed.normalized_power_w = None;
+            if let Some(obj) = parsed.streams_json.as_object_mut() {
+                obj.remove("watts");
+            }
+            for lap in &mut parsed.laps {
+                lap.avg_power_w = None;
+            }
+        }
+
+        let id = match existing_id {
+            Some(id) => id,
+            None => crate::db::next_negative_activity_id(pool).await?,
+        };
+        imported_ids.push(id);
+
+        set_step(format!("{label} : traitement des données"), i, total);
+        sqlx::query(
+            r#"
+            INSERT INTO activities
+                (id, started_at, sport_type, duration_s, distance_m, elevation_gain_m,
+                 avg_power_w, normalized_power_w, avg_hr, max_hr, title, source, external_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'garmin', ?)
+            ON CONFLICT (id) DO UPDATE SET
+                started_at = excluded.started_at,
+                sport_type = excluded.sport_type,
+                duration_s = excluded.duration_s,
+                distance_m = excluded.distance_m,
+                elevation_gain_m = excluded.elevation_gain_m,
+                avg_power_w = excluded.avg_power_w,
+                normalized_power_w = excluded.normalized_power_w,
+                avg_hr = excluded.avg_hr,
+                max_hr = excluded.max_hr,
+                title = excluded.title,
+                source = 'garmin',
+                external_id = excluded.external_id
+            "#,
+        )
+        .bind(id)
+        .bind(&parsed.started_at)
+        .bind(&activity.sport_type)
+        .bind(parsed.duration_s)
+        .bind(parsed.distance_m)
+        .bind(parsed.elevation_gain_m)
+        .bind(parsed.avg_power_w)
+        .bind(parsed.normalized_power_w)
+        .bind(parsed.avg_hr)
+        .bind(parsed.max_hr)
+        .bind(&activity.name)
+        .bind(activity.id)
+        .execute(pool)
+        .await?;
+
+        let streams_json = parsed.streams_json.to_string();
+        let route_thumb_svg = crate::route_thumb::compute(&streams_json).unwrap_or_default();
+        let route_points = crate::route_thumb::compute_points(&streams_json).unwrap_or_default();
+        sqlx::query(
+            r#"
+            INSERT INTO activity_streams (activity_id, streams_json)
+            VALUES (?, ?)
+            ON CONFLICT (activity_id) DO UPDATE SET streams_json = excluded.streams_json
+            "#,
+        )
+        .bind(id)
+        .bind(&streams_json)
+        .execute(pool)
+        .await?;
+        sqlx::query("UPDATE activities SET route_thumb_svg = ?, route_points_json = ? WHERE id = ?")
+            .bind(route_thumb_svg)
+            .bind(route_points)
+            .bind(id)
+            .execute(pool)
+            .await?;
+        crate::bests::store(pool, id, !is_ride, &parsed.streams_json).await?;
+
+        sqlx::query("DELETE FROM laps WHERE activity_id = ?")
+            .bind(id)
+            .execute(pool)
+            .await?;
+        for lap in &parsed.laps {
+            sqlx::query(
+                r#"
+                INSERT INTO laps (activity_id, lap_index, elapsed_time_s, distance_m, avg_power_w, avg_hr, max_hr)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                "#,
+            )
+            .bind(id)
+            .bind(lap.lap_index)
+            .bind(lap.elapsed_time_s)
+            .bind(lap.distance_m)
+            .bind(lap.avg_power_w)
+            .bind(lap.avg_hr)
+            .bind(lap.max_hr)
+            .execute(pool)
+            .await?;
+        }
+    }
+
+    set_step("Enregistrement de l'état de synchronisation", total, total);
+    let now = Utc::now().timestamp();
+    sqlx::query(
+        r#"
+        INSERT INTO sync_state (id, last_sync_epoch) VALUES (1, ?)
+        ON CONFLICT (id) DO UPDATE SET last_sync_epoch = excluded.last_sync_epoch
+        "#,
+    )
+    .bind(now)
+    .execute(pool)
+    .await?;
+
+    set_step("Calcul des métriques (TSS, CTL/ATL, zones)", total, total);
+    crate::metrics::run_incremental(pool, &imported_ids).await?;
+    if imported_ids.is_empty() {
+        set_step("Détection des segments (rien de nouveau, ignorée)", total, total);
+    } else {
+        set_step("Détection des segments", total, total);
+        crate::segments::run(pool).await?;
+    }
     Ok(())
 }

@@ -83,8 +83,13 @@ mod tests {
         migrate(&pool).await.unwrap();
 
         // Simulate the old history: 20 rows, wrong checksums, last one present,
-        // and no api_keys table yet.
+        // and none of the post-squash schema (api keys, Garmin source).
         sqlx::query("DROP TABLE api_keys").execute(&pool).await.unwrap();
+        sqlx::query("DROP INDEX IF EXISTS activities_source_external").execute(&pool).await.unwrap();
+        sqlx::query("ALTER TABLE activities DROP COLUMN external_id").execute(&pool).await.unwrap();
+        sqlx::query("ALTER TABLE activities DROP COLUMN source").execute(&pool).await.unwrap();
+        sqlx::query("ALTER TABLE settings DROP COLUMN sync_source").execute(&pool).await.unwrap();
+        sqlx::query("ALTER TABLE settings DROP COLUMN garmin_api_key").execute(&pool).await.unwrap();
         sqlx::query("DELETE FROM _sqlx_migrations").execute(&pool).await.unwrap();
         for i in 0..19i64 {
             sqlx::query(
@@ -106,7 +111,7 @@ mod tests {
 
         migrate(&pool).await.unwrap();
         let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations").fetch_one(&pool).await.unwrap();
-        assert_eq!(n, 2); // initial (adopted) + api_keys (applied after)
+        assert_eq!(n, 3); // initial (adopted) + api_keys + garmin_sync
         migrate(&pool).await.unwrap(); // idempotent
     }
 
@@ -142,8 +147,8 @@ pub async fn seed_settings(pool: &SqlitePool, config: &Config) -> anyhow::Result
         r#"
         INSERT OR IGNORE INTO settings
             (id, strava_client_id, strava_client_secret, anthropic_api_key, athlete_profile,
-             bilan_system_prompt, digest_system_prompt)
-        VALUES (1, ?, ?, ?, ?, ?, ?)
+             bilan_system_prompt, digest_system_prompt, garmin_api_key, sync_source)
+        VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
     )
     .bind(&config.strava_client_id)
@@ -152,9 +157,45 @@ pub async fn seed_settings(pool: &SqlitePool, config: &Config) -> anyhow::Result
     .bind(&config.athlete_profile)
     .bind(crate::llm::BILAN_DEFAULT_SYSTEM_PROMPT)
     .bind(crate::digest::DEFAULT_SYSTEM_PROMPT)
+    .bind(&config.garmin_api_key)
+    .bind(if config.garmin_api_key.trim().is_empty() || !config.strava_client_id.trim().is_empty() {
+        "strava"
+    } else {
+        "garmin"
+    })
     .execute(pool)
     .await?;
+
+    // Existing databases already have a settings row, so the insert above
+    // does nothing. Copy a key from the environment only while the column
+    // is still blank — /settings wins after that. Switch the source to
+    // Garmin only when Strava was never configured, so a daily Strava sync
+    // is not silently replaced.
+    if !config.garmin_api_key.trim().is_empty() {
+        let filled = sqlx::query("UPDATE settings SET garmin_api_key = ? WHERE id = 1 AND garmin_api_key = ''")
+            .bind(config.garmin_api_key.trim())
+            .execute(pool)
+            .await?;
+        if filled.rows_affected() > 0 {
+            sqlx::query(
+                "UPDATE settings SET sync_source = 'garmin' WHERE id = 1 AND sync_source = 'strava' AND strava_client_id = ''",
+            )
+            .execute(pool)
+            .await?;
+        }
+    }
     Ok(())
+}
+
+/// Next primary key for an activity that does not come from Strava. Strava
+/// ids are positive; file imports and Garmin activities share the negative
+/// space so the two can never collide (`activities.external_id` holds the
+/// Garmin id).
+pub async fn next_negative_activity_id(pool: &SqlitePool) -> anyhow::Result<i64> {
+    let min_id: i64 = sqlx::query_scalar("SELECT COALESCE(MIN(id), 0) FROM activities")
+        .fetch_one(pool)
+        .await?;
+    Ok(min_id.min(0) - 1)
 }
 
 /// Seeds `sync_state`'s refresh token from env on first run — afterwards

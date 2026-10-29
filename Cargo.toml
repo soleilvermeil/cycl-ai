@@ -22,6 +22,7 @@ chrono-tz = "0.10"
 fitparser = "0.11"
 gpx = "0.10"
 jsonwebtoken = "9"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

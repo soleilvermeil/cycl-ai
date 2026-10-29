@@ -66,10 +66,7 @@ pub async fn import_activity(State(state): State<AppState>, mut multipart: Multi
 /// Imported activities get a negative id (Strava's are always positive) so
 /// the two id spaces can never collide.
 async fn next_imported_id(pool: &SqlitePool) -> anyhow::Result<i64> {
-    let (min_id,): (i64,) = sqlx::query_as("SELECT COALESCE(MIN(id), 0) FROM activities")
-        .fetch_one(pool)
-        .await?;
-    Ok(min_id.min(0) - 1)
+    crate::db::next_negative_activity_id(pool).await
 }
 
 async fn insert_imported_activity(
@@ -83,8 +80,8 @@ async fn insert_imported_activity(
         r#"
         INSERT INTO activities
             (id, started_at, sport_type, duration_s, distance_m, elevation_gain_m,
-             avg_power_w, normalized_power_w, avg_hr, max_hr, title)
-        VALUES (?, ?, 'Ride', ?, ?, ?, ?, ?, ?, ?, ?)
+             avg_power_w, normalized_power_w, avg_hr, max_hr, title, source)
+        VALUES (?, ?, 'Ride', ?, ?, ?, ?, ?, ?, ?, ?, 'file')
         "#,
     )
     .bind(id)

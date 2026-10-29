@@ -70,6 +70,7 @@ mod tests {
             hr_max: 190,
             hr_rest: 50,
             athlete_profile: String::new(),
+            garmin_api_key: String::new(),
         }
     }
 

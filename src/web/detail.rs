@@ -30,6 +30,8 @@ struct ActivityDetailRow {
     streams_json: Option<String>,
     user_context: Option<String>,
     description: Option<String>,
+    source: String,
+    external_id: Option<i64>,
 }
 
 struct ActivityDetail {
@@ -49,6 +51,8 @@ struct ActivityDetail {
     streams_json: Option<String>,
     user_context: Option<String>,
     description: Option<String>,
+    source: String,
+    external_id: Option<i64>,
 }
 
 struct SegmentEffortRow {
@@ -88,7 +92,8 @@ async fn fetch_activity(pool: &SqlitePool, id: i64) -> anyhow::Result<Option<Act
         SELECT a.sport_type, a.started_at, a.distance_m, a.duration_s, a.elevation_gain_m,
                a.avg_power_w, a.normalized_power_w, a.avg_hr, a.max_hr, a.tss, a.intensity_factor,
                a.zone1_s, a.zone2_s, a.zone3_s, a.zone4_s, a.zone5_s, a.zone6_s, a.zone7_s,
-               b.text AS bilan, s.streams_json, a.user_context, a.description
+               b.text AS bilan, s.streams_json, a.user_context, a.description,
+               a.source, a.external_id
         FROM activities a
         LEFT JOIN activity_bilans b ON b.activity_id = a.id
         LEFT JOIN activity_streams s ON s.activity_id = a.id
@@ -116,6 +121,8 @@ async fn fetch_activity(pool: &SqlitePool, id: i64) -> anyhow::Result<Option<Act
         streams_json: r.streams_json,
         user_context: r.user_context,
         description: r.description,
+        source: r.source,
+        external_id: r.external_id,
     }))
 }
 
@@ -1161,9 +1168,13 @@ pub async fn activity_detail(
         format!("{llm_notice_html}{description_form_html}{context_form_html}")
     };
 
-    // Imported (GPX/FIT) activities use negative ids (see web::import) —
-    // there's no matching Strava activity to link to for those.
-    let strava_link_html = if id > 0 {
+    // Strava activities keep their Strava id. Garmin and file imports use a
+    // negative internal id; the Garmin activity id lives in `external_id`.
+    let strava_link_html = if activity.source == "garmin" {
+        activity.external_id.map(|gid| {
+            format!(r#"<p><a href="https://connect.garmin.com/modern/activity/{gid}" target="_blank" rel="noopener">voir sur Garmin Connect ↗</a></p>"#)
+        }).unwrap_or_default()
+    } else if activity.source != "file" && id > 0 {
         format!(r#"<p><a href="https://www.strava.com/activities/{id}" target="_blank" rel="noopener">voir sur Strava ↗</a></p>"#)
     } else {
         String::new()
